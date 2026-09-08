@@ -1,0 +1,55 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Conda
+.conda/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build files
+build/
+dist/
+*.egg-info/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+*.o
+*.so
+
+# Logs
+*.log
+
+# Large data / outputs
+data/
+dataset/
+datasets/
+outputs/
+output/
+runs/
+results/
+checkpoints/
+weights/
+
+# Model weights
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# System files
+.DS_Store
+Thumbs.db
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

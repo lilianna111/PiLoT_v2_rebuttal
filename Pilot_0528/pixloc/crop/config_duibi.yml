@@ -1,0 +1,183 @@
+##change1
+data_path: "data/{scene}_{modality}/{map_type}/{method}_2crop0308"
+yaw_flag: false
+# 注意：程序会自动从 selected_images.txt 中读取图像，并根据 selected_scenes 和 selected_modalities 进行过滤
+
+# 可选项配置
+modalities: ["rgb","thermal"]  # 数据类型：rgb 和/或 thermal
+methods: ["roma", "eloftr",  "xoftr","loftr","dkm","orb","superglue","sp_lightglue","sift"]  # 匹配方法：roma、eloftr、sift
+scenes: ["scene1","scene2","scene3","scene4","scene5","scene6","scene7","scene8",
+        "scene1_ther","scene2_ther","scene3_ther","scene4_ther","scene5_ther","scene6_ther","scene7_ther","scene8_ther","scene8_foggy"]  # 场景：scene1-8、scene1_ther-8_ther、scene1_night-3_night
+map_types: ["sat","uav"]  # 地图类型：satellite 和 uav
+
+# 默认选择（可以注释掉不需要的）
+selected_modalities: ["rgb"]  # 选择的数据类型
+selected_methods: ["roma","eloftr","tinyroma"]  # 选择的匹配方法
+##"roma","loftr","eloftr","xoftr","sp_lightglue"
+# selected_scenes: ["scene1"]
+selected_scenes: ["scene1", "scene2","scene3","scene4","scene5","scene6","scene7","scene8"]
+# selected_scenes: ["scene1","scene2","scene3","scene4","scene5","scene6","scene7","scene8",
+        # "scene1_ther","scene2_ther","scene3_ther","scene4_ther","scene5_ther","scene6_ther","scene7_ther","scene8_ther"]
+selected_map_types: ["sat"]  # 选择的地图类型（多个值，如果设置了这个，会忽略selected_map_type）
+
+device: "cuda"
+
+seed:
+  seed_int_trans_x: 0
+  seed_num_trans_x: 1
+  seed_int_trans_y: 0
+  seed_num_trans_y: 1
+  seed_int_trans_z: 0
+  seed_num_trans_z: 1
+  seed_int_yaw: 1
+  seed_num_yaw: 1
+
+query:
+  query_path_template: "dji_dataset/data/{scene}/{modality}/img"
+  query_txt_path_template: "dji_dataset/data/{scene}/{modality}/subs_all.txt"
+  pixel_json_path_template: "dji_dataset/data/{scene}/{modality}/pixel.json"
+  # 固定GT路径（若设置此项，则所有实验统一使用该路径）
+  GT_path: "dji_dataset/data/GT.json"
+  single_query_enable: false
+  # single_query_name: ["20250814_112225884", "20250814_112229287",
+  #                     "20250814_112235893", "20250814_112249306",
+  #                     "20250814_112349293", "20250814_112409311"]
+  # single_query_name: "20250814_104059561"
+
+
+
+ref:
+  ref_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/reference/"
+  ref_rgb_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/reference/rgb"
+  ref_depth_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/reference/npy"
+  ref_npy_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/reference/world_point.npy"
+  
+
+result:  
+  match_save_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/match"
+  homography_flag: true
+  homography_save_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/homography"
+##change3
+  homography_json_template: "output/result_homography/2crop0308/{map_type}/{scene}/{modality}/{method}_{modality}.json"
+  ray_trace_flag: true  
+  ray_trace_save_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/ray_trace"
+  ray_trace_json_template: "output/result_raytrace/2crop0308/{map_type}/{scene}/{modality}/{method}_{modality}.json"
+
+
+debug: false  # 设置为false来执行定位，true只生成可视化图片
+debug_path: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/debug"
+# 启用多比例定位测试：每个比例的定位结果会保存为 query_ratio10, query_ratio20 等
+test_all_ratios: true  
+
+rot:
+  rot_flag: true  
+  rot_save_path_template: "data/{scene}_{modality}/{map_type}/{method}_2crop0308/rot/"
+
+
+# Map配置 - 不同sequence和map类型对应的DSM/DOM路径
+map:
+  sat:
+    scene1: 
+      ref_DSM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DOM.tif"
+    scene2:
+      ref_DSM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DOM.tif"
+    scene3:
+      ref_DSM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DOM.tif"
+    scene4:
+      ref_DSM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DOM.tif"
+    scene5:
+      ref_DSM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DOM.tif"
+    scene6:
+      ref_DSM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DOM.tif"
+    scene7:
+      ref_DSM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DOM.tif"
+    scene8:
+      ref_DSM_path: "data/reference/Satellite/xiufengshan/xiufengshan_dsm.tif"
+      ref_DOM_path: "data/reference/Satellite/xiufengshan/xiufengshan_dom.tif"
+    scene1_ther: 
+      ref_DSM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DOM.tif"
+    scene2_ther: 
+      ref_DSM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DOM.tif"
+    scene3_ther: 
+      ref_DSM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/jadebay/fcw_hangtian_DOM.tif"
+    scene4_ther: 
+      ref_DSM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DOM.tif"
+    scene5_ther: 
+      ref_DSM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/biguiyuan/biguiyuan_hangtian_DOM.tif"
+    scene6_ther: 
+      ref_DSM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DOM.tif"
+    scene7_ther: 
+      ref_DSM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DSM.tif"
+      ref_DOM_path: "data/reference/Satellite/baizhupo/baizhupo_hangtian_DOM.tif"
+    scene8_ther: 
+      ref_DSM_path: "data/reference/Satellite/xiufengshan/xiufengshan_dsm.tif"
+      ref_DOM_path: "data/reference/Satellite/xiufengshan/xiufengshan_dom.tif"
+    scene8_foggy: 
+      ref_DSM_path: "data/reference/Satellite/xiufengshan/xiufengshan_dsm.tif"
+      ref_DOM_path: "data/reference/Satellite/xiufengshan/xiufengshan_dom.tif"
+
+  uav:
+    scene1:
+      ref_DSM_path: "data/reference/UAV/jadebay/0.5_DSM_new.tif"
+      ref_DOM_path: "data/reference/UAV/jadebay/0.5_DOM_new.tif"
+    scene2:
+      ref_DSM_path: "data/reference/UAV/jadebay/0.5_DSM_new.tif"
+      ref_DOM_path: "data/reference/UAV/jadebay/0.5_DOM_new.tif"
+    scene3:
+      ref_DSM_path: "data/reference/UAV/jadebay/0.5_DSM_new.tif"
+      ref_DOM_path: "data/reference/UAV/jadebay/0.5_DOM_new.tif"
+    scene4:
+      ref_DSM_path: "data/reference/UAV/biguiyuan/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/biguiyuan/0.5_DOM.tif"
+    scene5:
+      ref_DSM_path: "data/reference/UAV/biguiyuan/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/biguiyuan/0.5_DOM.tif"
+    scene6:
+      ref_DSM_path: "data/reference/UAV/baizhupo/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/baizhupo/0.5_DOM.tif"
+    scene7:
+      ref_DSM_path: "data/reference/UAV/baizhupo/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/baizhupo/0.5_DOM.tif"
+    scene8:
+      ref_DSM_path: "data/reference/UAV/xiufengshan/xiufengshan_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/xiufengshan/xiufengshan_DOM.tif"
+    scene1_ther:
+      ref_DSM_path: "data/reference/UAV/jadebay/0.5_DSM_new.tif"
+      ref_DOM_path: "data/reference/UAV/jadebay/0.5_DOM_new.tif"
+    scene2_ther:
+      ref_DSM_path: "data/reference/UAV/jadebay/0.5_DSM_new.tif"
+      ref_DOM_path: "data/reference/UAV/jadebay/0.5_DOM_new.tif"
+    scene3_ther:
+      ref_DSM_path: "data/reference/UAV/jadebay/0.5_DSM_new.tif"
+      ref_DOM_path: "data/reference/UAV/jadebay/0.5_DOM_new.tif"
+    scene4_ther:
+      ref_DSM_path: "data/reference/UAV/biguiyuan/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/biguiyuan/0.5_DOM.tif"
+    scene5_ther:
+      ref_DSM_path: "data/reference/UAV/biguiyuan/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/biguiyuan/0.5_DOM.tif"
+    scene6_ther:
+      ref_DSM_path: "data/reference/UAV/baizhupo/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/baizhupo/0.5_DOM.tif"
+    scene7_ther:
+      ref_DSM_path: "data/reference/UAV/baizhupo/0.5_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/baizhupo/0.5_DOM.tif"
+    scene8_ther:
+      ref_DSM_path: "data/reference/UAV/xiufengshan/xiufengshan_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/xiufengshan/xiufengshan_DOM.tif"
+    scene8_foggy:
+      ref_DSM_path: "data/reference/UAV/xiufengshan/xiufengshan_DSM.tif"
+      ref_DOM_path: "data/reference/UAV/xiufengshan/xiufengshan_DOM.tif"

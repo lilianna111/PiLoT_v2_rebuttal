@@ -1,0 +1,43 @@
+# 从 log_1.txt 提取：深度汇总 & 关键误差行
+# 源文件: log_1.txt
+
+========== 一、关键误差行（最终统计）==========
+
+Median errors: 152.871m, 49.138deg, 48.351deg
+Std errors: 77.950m, 40.814deg, 41.077deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.44%
+	300cm, 3.0deg : 6.89%
+	500cm, 5.0deg : 10.33%
+	1000cm, 10.0deg : 15.89%
+
+（说明：位置中位数误差 152.871m，角度中位数误差约 49.1° / 48.4°；仅 0.44% 图像在 100cm+1° 内，15.89% 在 1000cm+10° 内）
+
+========== 二、深度汇总（depth_prior_summary）==========
+
+结构说明：每帧有 3 条 [depth_prior_summary]（iters=2/3/4），后跟 1 条 loc 耗时。
+全 log 共约 3281 条相关行（约 820 帧 × 4 行）。
+
+--- 示例：第 0 帧（首帧）---
+[depth_prior_summary] tag=iters=2 calls=4 depth_calls=4 | res|m| mean=4.655 p90=12.310 | valid_ratio mean=1.000 | gate mean=0.640 | scale mean=2.998 max=3.000 | grad(depth/proj) mean=0.007
+[depth_prior_summary] tag=iters=3 calls=6 depth_calls=6 | res|m| mean=3.972 p90=12.135 | valid_ratio mean=1.000 | gate mean=0.695 | scale mean=2.978 max=3.000 | grad(depth/proj) mean=0.008
+[depth_prior_summary] tag=iters=4 calls=8 depth_calls=8 | res|m| mean=3.612 p90=11.775 | valid_ratio mean=1.000 | gate mean=0.709 | scale mean=2.950 max=3.000 | grad(depth/proj) mean=0.013
+loc 耗时: 2.2291667461395264 秒
+
+--- 示例：第 1 帧 ---
+[depth_prior_summary] tag=iters=2 calls=4 depth_calls=4 | res|m| mean=3.462 p90=7.997 | valid_ratio mean=1.000 | gate mean=0.677 | scale mean=3.000 max=3.000 | grad(depth/proj) mean=0.006
+[depth_prior_summary] tag=iters=3 calls=6 depth_calls=6 | res|m| mean=2.675 p90=7.762 | valid_ratio mean=1.000 | gate mean=0.759 | scale mean=2.981 max=3.000 | grad(depth/proj) mean=0.008
+[depth_prior_summary] tag=iters=4 calls=8 depth_calls=8 | res|m| mean=2.549 p90=7.263 | valid_ratio mean=1.000 | gate mean=0.771 | scale mean=2.917 max=3.000 | grad(depth/proj) mean=0.016
+loc 耗时: 0.3856205940246582 秒
+
+--- 最后一帧（idx: 820）异常：res 与 scale 异常 ---
+[depth_prior_summary] tag=iters=2 calls=4 depth_calls=4 | res|m| mean=18.401 p90=19.180 | valid_ratio mean=1.000 | gate mean=0.100 | scale mean=0.050 max=0.050 | grad(depth/proj) mean=3434159872.000
+
+（说明：最后一帧 scale=0.05、gate=0.1、grad 极大，可能定位失败或深度异常）
+
+========== 字段含义简要 ==========
+res|m| mean/p90 : 残差（米）均值/90 分位
+valid_ratio mean : 有效点比例均值
+gate mean : 门限均值
+scale mean/max : 尺度均值/最大值
+grad(depth/proj) mean : 深度/投影梯度均值

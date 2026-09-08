@@ -1,0 +1,1 @@
+0_0.png: [iso: 10670] [shutter: 1/30.0] [fnum: 1.7] [ev: 0] [color_md: default] [ae_meter_md: 1] [focal_len: 24.00] [dzoom_ratio: 1.00], [latitude: 28.290497] [longitude: 112.999054] [rel_alt: 135.055 abs_alt: 157.509] [gb_yaw: 42.4 gb_pitch: -52.9 gb_roll: 0.0] [dehaze_level: 0] [dehaze_mode: 0]

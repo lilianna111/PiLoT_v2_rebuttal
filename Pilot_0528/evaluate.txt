@@ -1,0 +1,252 @@
+--------------------------------高精度结果--------------------------------
+
+Median errors: 1.789m, 0.667deg, 0.107deg
+Std errors: 1.264m, 0.448deg, 0.104deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 21.17%
+	300cm, 3.0deg : 81.00%
+	500cm, 5.0deg : 96.83%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 6.33%
+	0.02deg : 12.00%
+	0.05deg : 26.83%
+	0.10deg : 47.00%
+	0.20deg : 80.83%
+--------------------------------低精度结果--------------------------------
+
+Median errors: 2.052m, 0.808deg, 0.115deg
+Std errors: 1.286m, 0.471deg, 0.109deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 14.83%
+	300cm, 3.0deg : 75.83%
+	500cm, 5.0deg : 96.67%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 4.50%
+	0.02deg : 8.33%
+	0.05deg : 23.00%
+	0.10deg : 46.00%
+	0.20deg : 74.83%
+--------------------------------crop高精度结果--------------------------------
+
+Median errors: 1.679m, 0.742deg, 0.232deg
+Std errors: 1.046m, 0.461deg, 0.376deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 16.83%
+	300cm, 3.0deg : 85.17%
+	500cm, 5.0deg : 99.17%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 2.83%
+	0.02deg : 6.00%
+	0.05deg : 18.00%
+	0.10deg : 30.17%
+	0.20deg : 47.17%
+--------------------------------crop低精度结果--------------------------------
+
+Median errors: 5.014m, 1.002deg, 0.176deg
+Std errors: 0.982m, 0.482deg, 0.400deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.00%
+	300cm, 3.0deg : 0.00%
+	500cm, 5.0deg : 49.50%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 2.83%
+	0.02deg : 6.33%
+	0.05deg : 18.33%
+	0.10deg : 33.00%
+	0.20deg : 53.33%
+--------------------------------crop高精度DOM+低精度DSM结果--------------------------------
+
+Median errors: 4.685m, 0.996deg, 0.245deg
+Std errors: 0.685m, 0.462deg, 0.364deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.00%
+	300cm, 3.0deg : 0.00%
+	500cm, 5.0deg : 66.33%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 3.67%
+	0.02deg : 6.50%
+	0.05deg : 17.17%
+	0.10deg : 28.17%
+	0.20deg : 44.50%
+--------------------------------crop低精度DOM+高精度DSM结果--------------------------------
+
+Median errors: 4.582m, 1.393deg, 0.204deg
+Std errors: 1.893m, 0.600deg, 0.399deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.67%
+	300cm, 3.0deg : 16.17%
+	500cm, 5.0deg : 59.33%
+	1000cm, 10.0deg : 99.50%
+	0.01deg : 2.17%
+	0.02deg : 5.50%
+	0.05deg : 12.33%
+	0.10deg : 28.83%
+	0.20deg : 49.33%
+--------------------------------高精度结果--------------------------------
+
+Median errors: 1.187m, 0.541deg, 0.199deg
+Std errors: 0.673m, 0.272deg, 0.149deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 35.51%
+	300cm, 3.0deg : 97.54%
+	500cm, 5.0deg : 100.00%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 2.32%
+	0.02deg : 3.91%
+	0.05deg : 9.71%
+	0.10deg : 21.59%
+	0.20deg : 50.29%
+--------------------------------低精度结果--------------------------------
+
+Median errors: 1.287m, 0.568deg, 0.195deg
+Std errors: 0.765m, 0.290deg, 0.155deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 31.30%
+	300cm, 3.0deg : 95.94%
+	500cm, 5.0deg : 99.71%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 2.17%
+	0.02deg : 4.64%
+	0.05deg : 13.62%
+	0.10deg : 24.78%
+	0.20deg : 50.87%
+--------------------------------crop高精度结果--------------------------------
+
+Median errors: 1.715m, 0.677deg, 0.375deg
+Std errors: 1.121m, 0.527deg, 0.373deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 19.13%
+	300cm, 3.0deg : 85.80%
+	500cm, 5.0deg : 98.55%
+	1000cm, 10.0deg : 100.00%
+	0.01deg : 0.00%
+	0.02deg : 0.14%
+	0.05deg : 0.58%
+	0.10deg : 2.46%
+	0.20deg : 16.52%
+--------------------------------crop低精度结果--------------------------------
+
+Median errors: 4.587m, 1.469deg, 0.238deg
+Std errors: 1.521m, 0.930deg, 0.334deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.00%
+	300cm, 3.0deg : 5.94%
+	500cm, 5.0deg : 65.36%
+	1000cm, 10.0deg : 98.41%
+	0.01deg : 1.74%
+	0.02deg : 3.77%
+	0.05deg : 9.13%
+	0.10deg : 20.87%
+	0.20deg : 42.03%
+--------------------------------crop高精度DOM+低精度DSM结果--------------------------------
+
+Median errors: 4.009m, 0.884deg, 0.419deg
+Std errors: 0.937m, 0.606deg, 0.358deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.00%
+	300cm, 3.0deg : 1.74%
+	500cm, 5.0deg : 84.64%
+	1000cm, 10.0deg : 99.71%
+	0.01deg : 0.72%
+	0.02deg : 2.17%
+	0.05deg : 3.48%
+	0.10deg : 6.23%
+	0.20deg : 16.23%
+--------------------------------crop低精度DOM+高精度DSM结果--------------------------------
+
+Median errors: 3.106m, 1.316deg, 0.253deg
+Std errors: 1.938m, 0.916deg, 0.333deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.87%
+	300cm, 3.0deg : 47.54%
+	500cm, 5.0deg : 86.67%
+	1000cm, 10.0deg : 97.97%
+	0.01deg : 2.61%
+	0.02deg : 3.91%
+	0.05deg : 10.00%
+	0.10deg : 19.42%
+	0.20deg : 42.46%
+--------------------------------高精度结果--------------------------------
+
+Median errors: 2.519m, 1.058deg, 0.659deg
+Std errors: 6.357m, 2.838deg, 0.268deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 2.30%
+	300cm, 3.0deg : 60.90%
+	500cm, 5.0deg : 79.50%
+	1000cm, 10.0deg : 87.90%
+	0.01deg : 0.10%
+	0.02deg : 0.40%
+	0.05deg : 0.80%
+	0.10deg : 1.70%
+	0.20deg : 2.50%
+--------------------------------低精度结果--------------------------------
+
+Median errors: 3.354m, 1.381deg, 0.670deg
+Std errors: 8.584m, 3.927deg, 0.617deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 3.70%
+	300cm, 3.0deg : 43.00%
+	500cm, 5.0deg : 70.40%
+	1000cm, 10.0deg : 83.90%
+	0.01deg : 0.00%
+	0.02deg : 0.00%
+	0.05deg : 0.20%
+	0.10deg : 0.70%
+	0.20deg : 2.10%
+--------------------------------crop高精度结果--------------------------------
+
+Median errors: 2.725m, 1.396deg, 0.712deg
+Std errors: 7.034m, 2.965deg, 0.484deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 4.10%
+	300cm, 3.0deg : 54.50%
+	500cm, 5.0deg : 71.20%
+	1000cm, 10.0deg : 77.40%
+	0.01deg : 0.10%
+	0.02deg : 0.20%
+	0.05deg : 1.40%
+	0.10deg : 2.90%
+	0.20deg : 6.10%
+--------------------------------crop低精度结果--------------------------------
+
+Median errors: 5.546m, 1.423deg, 0.554deg
+Std errors: 1.738m, 0.891deg, 0.408deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.00%
+	300cm, 3.0deg : 0.10%
+	500cm, 5.0deg : 24.00%
+	1000cm, 10.0deg : 95.20%
+	0.01deg : 0.30%
+	0.02deg : 0.60%
+	0.05deg : 1.50%
+	0.10deg : 4.10%
+	0.20deg : 7.60%
+--------------------------------crop高精度DOM+低精度DSM结果--------------------------------
+
+Median errors: 5.183m, 1.405deg, 0.693deg
+Std errors: 5.322m, 2.411deg, 0.453deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.00%
+	300cm, 3.0deg : 0.00%
+	500cm, 5.0deg : 43.40%
+	1000cm, 10.0deg : 79.80%
+	0.01deg : 0.40%
+	0.02deg : 0.60%
+	0.05deg : 1.10%
+	0.10deg : 1.90%
+	0.20deg : 6.20%
+--------------------------------crop低精度DOM+高精度DSM结果--------------------------------
+
+Median errors: 4.015m, 1.534deg, 0.554deg
+Std errors: 2.882m, 1.114deg, 0.426deg
+Percentage of test images localized within:
+	100cm, 1.0deg : 0.10%
+	300cm, 3.0deg : 22.90%
+	500cm, 5.0deg : 68.40%
+	1000cm, 10.0deg : 92.50%
+	0.01deg : 0.40%
+	0.02deg : 0.70%
+	0.05deg : 2.30%
+	0.10deg : 4.30%
+	0.20deg : 8.60%

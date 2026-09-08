@@ -1,0 +1,4 @@
+先不要修改代码，是方案出了问题，现在的方案距离60ms相差太多，你可以参考/home/amax/Documents/c
+  ode/pilot_ral/PiLoT_origin/main.py，调用了/home/amax/Documents/code/pilot_ral/PiLoT_origin/p
+  ixloc/pixlib/models/base_optimizer.py，是否是采用cuda计算投影误差？如何做的？能不能对我当前
+  项目起到作用？

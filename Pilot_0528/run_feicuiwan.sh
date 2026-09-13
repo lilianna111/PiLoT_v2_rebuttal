@@ -72,19 +72,18 @@ names=(
 
 # ==== 你想运行哪些 name？====
 target_names=(
-
   # "DJI_20250612182732_0001_V"
-  # "DJI_20250612183852_0005_V"
-  # "DJI_20250612194903_0021_V"  
-  # "DJI_20250612193930_0012_V"
-  # "DJI_20250612194150_0014_V"
-  # "DJI_20250612194622_0018_V"
+  "DJI_20250612183852_0005_V"
+  "DJI_20250612194903_0021_V"  
+  "DJI_20250612193930_0012_V"
+  "DJI_20250612194150_0014_V"
+  "DJI_20250612194622_0018_V"
   "DJI_20250612182017_0001_V"
 
 )
 
-sample_nums=(500)
-output_base="/media/amax/PortableSSD/0908/all"
+sample_nums=(100 300 500 700 900)
+output_base="/media/amax/PortableSSD/0908/seed"
 
 # ==== 从 txt 中读取 init_euler 和 init_trans ====
 read_pose_from_file() {

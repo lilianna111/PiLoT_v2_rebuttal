@@ -10,13 +10,16 @@ import cv2
 import shutil
 import argparse
 import ast
+import csv
+import json
+import sys
 import numpy as np
 from tqdm import tqdm
 from pprint import pformat
 from pixloc.pixlib.geometry import Camera, Pose
 from pixloc.utils.eval import evaluate_xyz, evaluate_XYZ_EULER, evaluate, euler_angles_to_matrix_ECEF_w2c
 from pixloc.utils.get_depth import get_3D_samples_v3, pad_to_multiple, generate_render_camera, get_3D_samples_v2
-from pixloc.utils.transform import euler_angles_to_matrix_ECEF, pixloc_to_osg, WGS84_to_ECEF
+from pixloc.utils.transform import ECEF_to_WGS84, euler_angles_to_matrix_ECEF, pixloc_to_osg, WGS84_to_ECEF
 from pixloc.utils import video_generation
 from pixloc.pixlib.datasets.view import read_image_list
 import time
@@ -54,6 +57,38 @@ def get_init(pose_file):
                 origin = WGS84_to_ECEF(translation)
                 break
     return euler_angles, translation, origin
+
+
+def add_translation_prior_ecef_xy(translation, dx_m, dy_m):
+    """Add a direct ECEF (dX, dY, 0) offset to a WGS84 position."""
+    base_ecef = np.asarray(WGS84_to_ECEF(translation), dtype=np.float64)
+    delta_ecef = np.array([dx_m, dy_m, 0.0], dtype=np.float64)
+    prior_ecef = base_ecef + delta_ecef
+    return ECEF_to_WGS84(prior_ecef), prior_ecef, delta_ecef
+
+
+def translation_error_ecef(reference_translation, estimated_translation):
+    reference_ecef = np.asarray(WGS84_to_ECEF(reference_translation), dtype=np.float64)
+    estimated_ecef = np.asarray(WGS84_to_ECEF(estimated_translation), dtype=np.float64)
+    return estimated_ecef - reference_ecef
+
+
+TRANSLATION_FRAME_FIELDS = [
+    "frame", "image", "injected_dx_m", "injected_dy_m",
+    "gt_ecef_x", "gt_ecef_y", "gt_ecef_z",
+    "crop_prior_ecef_x", "crop_prior_ecef_y", "crop_prior_ecef_z",
+    "pred_ecef_x", "pred_ecef_y", "pred_ecef_z",
+    "prior_error_x_m", "prior_error_y_m", "prior_error_z_m",
+    "prior_error_xy_m", "prior_error_3d_m",
+    "final_error_x_m", "final_error_y_m", "final_error_z_m",
+    "final_error_xy_m", "final_error_3d_m",
+    "final_yaw_error_deg", "final_rotation_error_deg",
+    "optimization_success", "failure_reason",
+    "crop_ms", "localization_ms", "back_project_ms",
+    "feature_ms", "optimizer_ms", "postprocess_ms",
+]
+
+
 def load_poses(pose_file, origin = None):
     """Load poses from the pose file."""
     pose_dict = {}
@@ -139,15 +174,26 @@ def process_map_crop(ref_DSM_path, pose_data, ref_npy_path, name, map_data_pack,
     return data
 
 class DualProcessTask:        
-    def __init__(self, config, init_euler = None, init_trans = None, name = None, sample_num=300, output_folder=None):
+    def __init__(self, config, init_euler = None, init_trans = None, name = None, sample_num=300,
+                 output_folder=None, translation_sensitivity=False,
+                 prior_dx_m=0.0, prior_dy_m=0.0, random_seed=0):
         # 用 multiprocessing 队列/事件
         self.task_q   = Queue(maxsize=2)     # 渲染 → 定位
         self.pose_q   = Queue(maxsize=3)     # 定位 → 渲染
         self.stop_evt = Event()
+        self.localization_failure_evt = Event()
         self.render_config = config["render_config"]
         default_confs = config["default_confs"] 
         self.conf = default_confs['from_render_test'] # from_render_test
         self.sample_num = sample_num
+        self.translation_sensitivity = bool(translation_sensitivity)
+        self.prior_dx_m = float(prior_dx_m)
+        self.prior_dy_m = float(prior_dy_m)
+        self.random_seed = int(random_seed)
+        if not np.isfinite([self.prior_dx_m, self.prior_dy_m]).all():
+            raise ValueError("prior_dx_m and prior_dy_m must be finite")
+        if not self.translation_sensitivity and (self.prior_dx_m != 0 or self.prior_dy_m != 0):
+            raise ValueError("non-zero ECEF translation requires --translation_sensitivity")
         # conf初始化
         folder_path = default_confs['dataset_path']
         dataset_name = default_confs['dataset_name']
@@ -157,6 +203,7 @@ class DualProcessTask:
         if name is not None:
             dataset_name = name
             output_name = name
+        self.dataset_name = dataset_name
         # if init_euler is not None:
         #     self.render_config['init_rot'], self.render_config['init_trans'] = init_euler, init_trans
         #     self.euler_angles = init_euler
@@ -167,7 +214,7 @@ class DualProcessTask:
         # output_folder = "/media/amax/AE0E2AFD0E2ABE69/datasets/outputs/FPVLoc_depth"
         # output_folder = "/media/amax/PS2000/ral/crop_1"
         if output_folder is None:
-            output_folder = "/media/amax/PortableSSD/0908/all"
+            output_folder = "/media/amax/PortableSSD/0908/angle"
         # output_folder = "/media/amax/AE0E2AFD0E2ABE69/datasets/outputs/FPVLoc_depth_weixing"
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
@@ -179,6 +226,16 @@ class DualProcessTask:
         self.pre_path = os.path.join(pre_path, output_name)
         self.depth_txt_path = os.path.join(depth_txt_folder, output_name + ".txt")
         self.angle_txt_path = os.path.join(angle_txt_folder, output_name + ".txt")
+        experiment_outputs = [
+            self.outputs,
+            os.path.join(output_folder, output_name + ".txt"),
+            os.path.join(output_folder, output_name + "_frames.csv"),
+            os.path.join(output_folder, output_name + "_config.json"),
+            os.path.join(output_folder, output_name + "_status.json"),
+        ]
+        existing_outputs = [path for path in experiment_outputs if os.path.exists(path)]
+        if self.translation_sensitivity and existing_outputs:
+            raise FileExistsError(f"Experiment output already exists: {existing_outputs[0]}")
         if not os.path.exists(self.outputs):
             os.makedirs(self.outputs)
         else:
@@ -199,6 +256,9 @@ class DualProcessTask:
         self.last_frame_info['refine_conf'] = self.refine_conf
         self.gt_reset_report = os.path.join(output_folder, dataset_name + "_reset.txt")
         self.sample_num_report = os.path.join(output_folder, dataset_name + f"_{self.sample_num}.txt")
+        self.translation_frames_report = os.path.join(output_folder, dataset_name + "_frames.csv")
+        self.translation_config_report = os.path.join(output_folder, dataset_name + "_config.json")
+        self.run_status_report = os.path.join(output_folder, dataset_name + "_status.json")
         
         # 初始化先验位姿和内参
         self.name_q = None
@@ -226,22 +286,64 @@ class DualProcessTask:
 
         self.render_camera = generate_render_camera(self.render_camera_osg).float()
         self.render_config['render_camera'] = self.render_camera_osg 
-        self.save_crop_frames = True
+        self.save_crop_frames = not self.translation_sensitivity
 
         # 是否padding, num init  pose
         self.num_init_pose = default_confs['num_init_pose']
         self.padding = default_confs['padding']
         self.euler_angles, self.translation, self.origin = get_init(self.gt_pose)
+        gt_init_translation = list(self.translation)
+        if self.translation_sensitivity:
+            self.translation, prior_ecef, delta_ecef = add_translation_prior_ecef_xy(
+                self.translation, self.prior_dx_m, self.prior_dy_m
+            )
+            self.origin = prior_ecef.tolist()
+        else:
+            prior_ecef = np.asarray(self.origin, dtype=np.float64)
+            delta_ecef = np.zeros(3, dtype=np.float64)
         self.render_config['init_rot'], self.render_config['init_trans'] = self.euler_angles, self.translation
         default_confs['refine']['origin'] = self.origin
         self.gt_pose_dict = load_poses(self.gt_pose, origin = self.origin)
+
+        if self.translation_sensitivity:
+            actual_delta_ecef = translation_error_ecef(gt_init_translation, self.translation)
+            config_record = {
+                "experiment": "translation_only_ecef_xy",
+                "sequence": dataset_name,
+                "expected_frames": len(self.img_list),
+                "sample_num": self.sample_num,
+                "random_seed": self.random_seed,
+                "prior_dx_m": self.prior_dx_m,
+                "prior_dy_m": self.prior_dy_m,
+                "prior_dz_m": 0.0,
+                "prior_xy_magnitude_m": float(np.hypot(self.prior_dx_m, self.prior_dy_m)),
+                "yaw_noise_deg": 0.0,
+                "gt_reset_enabled": False,
+                "save_crop_frames": self.save_crop_frames,
+                "initial_gt_wgs84": gt_init_translation,
+                "initial_gt_ecef": WGS84_to_ECEF(gt_init_translation),
+                "delta_ecef_m": delta_ecef.tolist(),
+                "initial_prior_wgs84": self.translation,
+                "initial_prior_ecef": prior_ecef.tolist(),
+                "actual_prior_error_ecef_m": actual_delta_ecef.tolist(),
+            }
+            with open(self.translation_config_report, "w") as f:
+                json.dump(config_record, f, indent=2)
+            self._write_run_status("running", 0)
+            logging.warning(
+                "Translation-only ECEF prior: dX=%.3f m dY=%.3f m actual=%s",
+                self.prior_dx_m,
+                self.prior_dy_m,
+                np.round(actual_delta_ecef, 6).tolist(),
+            )
         
         self.device = 'cuda'
         self.origin = torch.tensor(self.origin, device=self.device)
         self.query_camera, self.render_camera = self.query_camera.to(self.device), self.render_camera.to(self.device)
 
         self.pose_q.put_nowait((self.euler_angles, self.translation))
-        self.pose_q.put_nowait((self.euler_angles, self.translation))
+        if not self.translation_sensitivity:
+            self.pose_q.put_nowait((self.euler_angles, self.translation))
 
     @staticmethod
     def _normalize_pose_name(name):
@@ -270,6 +372,95 @@ class DualProcessTask:
         cos = np.clip((np.trace(np.dot(R_gt.T, R_pred)) - 1) / 2, -1.0, 1.0)
         e_R = float(np.rad2deg(np.abs(np.arccos(cos))))
         return e_t, e_R, gt_euler.tolist(), gt_translation.tolist()
+
+    def _pose_error_record(self, qname, translation, euler_angles):
+        gt_name = self._normalize_pose_name(qname)
+        gt_info = self.gt_pose_dict.get(gt_name)
+        if gt_info is None:
+            return None
+        gt_translation = np.asarray(gt_info['trans'], dtype=np.float64)
+        gt_euler = np.asarray(gt_info['euler'], dtype=np.float64)
+        gt_ecef = np.asarray(WGS84_to_ECEF(gt_translation), dtype=np.float64)
+        estimated_ecef = np.asarray(WGS84_to_ECEF(translation), dtype=np.float64)
+        error_ecef = estimated_ecef - gt_ecef
+        yaw_error = abs((float(euler_angles[2]) - float(gt_euler[2]) + 180.0) % 360.0 - 180.0)
+        return {
+            "gt_ecef": gt_ecef.tolist(),
+            "estimated_ecef": estimated_ecef.tolist(),
+            "error_ecef": error_ecef.tolist(),
+            "error_xy_m": float(np.linalg.norm(error_ecef[:2])),
+            "error_3d_m": float(np.linalg.norm(error_ecef)),
+            "yaw_error_deg": float(yaw_error),
+        }
+
+    def _translation_frame_record(self, frame, img_path, crop_trans, crop_euler,
+                                  pred_trans=None, pred_euler=None,
+                                  success=True, failure_reason="", timings=None):
+        row = {field: "" for field in TRANSLATION_FRAME_FIELDS}
+        row.update({
+            "frame": frame,
+            "image": os.path.basename(img_path),
+            "injected_dx_m": self.prior_dx_m,
+            "injected_dy_m": self.prior_dy_m,
+            "optimization_success": int(success),
+            "failure_reason": failure_reason,
+        })
+        prior = self._pose_error_record(img_path, crop_trans, crop_euler)
+        if prior is not None:
+            gt_ecef = prior["gt_ecef"]
+            crop_ecef = prior["estimated_ecef"]
+            error_ecef = prior["error_ecef"]
+            row.update({
+                "gt_ecef_x": gt_ecef[0],
+                "gt_ecef_y": gt_ecef[1],
+                "gt_ecef_z": gt_ecef[2],
+                "crop_prior_ecef_x": crop_ecef[0],
+                "crop_prior_ecef_y": crop_ecef[1],
+                "crop_prior_ecef_z": crop_ecef[2],
+                "prior_error_x_m": error_ecef[0],
+                "prior_error_y_m": error_ecef[1],
+                "prior_error_z_m": error_ecef[2],
+                "prior_error_xy_m": prior["error_xy_m"],
+                "prior_error_3d_m": prior["error_3d_m"],
+            })
+        if pred_trans is not None and pred_euler is not None:
+            final = self._pose_error_record(img_path, pred_trans, pred_euler)
+            _, rotation_error, _, _ = self._compute_frame_error_against_gt(
+                img_path, pred_trans, pred_euler
+            )
+            if final is not None:
+                pred_ecef = final["estimated_ecef"]
+                error_ecef = final["error_ecef"]
+                row.update({
+                    "pred_ecef_x": pred_ecef[0],
+                    "pred_ecef_y": pred_ecef[1],
+                    "pred_ecef_z": pred_ecef[2],
+                    "final_error_x_m": error_ecef[0],
+                    "final_error_y_m": error_ecef[1],
+                    "final_error_z_m": error_ecef[2],
+                    "final_error_xy_m": final["error_xy_m"],
+                    "final_error_3d_m": final["error_3d_m"],
+                    "final_yaw_error_deg": final["yaw_error_deg"],
+                    "final_rotation_error_deg": rotation_error,
+                })
+        if timings:
+            row.update(timings)
+        return row
+
+    def _write_run_status(self, status, successful_frames, failure_record=None):
+        if not self.translation_sensitivity:
+            return
+        record = {
+            "status": status,
+            "sequence": self.dataset_name,
+            "expected_frames": len(self.img_list),
+            "successful_frames": successful_frames,
+            "attempted_frames": successful_frames + int(failure_record is not None),
+        }
+        if failure_record is not None:
+            record.update(failure_record)
+        with open(self.run_status_report, "w") as f:
+            json.dump(record, f, indent=2)
 
     def _write_reset_report(self, total_frames, reset_count, sample_num, reset_records):
         lines = [
@@ -312,6 +503,8 @@ class DualProcessTask:
     def rendering_worker(self):
         import torch
         from pixloc.crop.ray_casting import TargetLocation
+        if self.translation_sensitivity:
+            np.random.seed(self.random_seed)
         # === 1. 配置路径 ===
         # ref_DOM_path = "/media/amax/AE0E2AFD0E2ABE69/datasets/DSM/feicuiwan/feicuiwan/fcw_hangtian_DOM.tif"
         # ref_DSM_path = "/media/amax/AE0E2AFD0E2ABE69/datasets/DSM/0.5/0.5/hangtianDSM.tif"
@@ -347,6 +540,22 @@ class DualProcessTask:
         fps_log_every = 0
         sample_num_report_lines = []
 
+        def send_crop_failure(reason, euler, trans):
+            failure_item = {
+                "failure": True,
+                "frame": idx,
+                "reason": reason,
+                "render_euler": list(euler),
+                "render_trans": list(trans),
+            }
+            while True:
+                try:
+                    self.task_q.put(failure_item, timeout=1)
+                    break
+                except queue.Full:
+                    if self.stop_evt.is_set():
+                        break
+
         # === 3. 主循环：按位姿裁剪 ===
         while True:
             try:
@@ -378,12 +587,18 @@ class DualProcessTask:
                 )
             except Exception as exc:
                 logging.error(f"process_map_crop 失败 name={name}: {exc}")
+                if self.translation_sensitivity:
+                    send_crop_failure(f"crop_exception: {exc}", euler, trans)
+                    break
                 continue
             color = crop_data['dom_crop']
             points3d = crop_data['point_cloud_crop']
             valid_mask = np.isfinite(points3d).all(axis=-1) & (points3d[..., 2] > 0)    #valid_mask: 有效掩码，用于标识哪些点是有效的
             if not np.any(valid_mask):
                 logging.error(f"裁剪结果无有效3D点: frame={name}")
+                if self.translation_sensitivity:
+                    send_crop_failure("crop_has_no_valid_3d_points", euler, trans)
+                    break
                 continue
 
             # --- 对齐参考尺寸到渲染相机分辨率（保证与 query 一致） ---
@@ -416,6 +631,9 @@ class DualProcessTask:
             points_valid = points3d[mask]
             if points_valid.shape[0] == 0:
                 logging.error(f"裁剪结果无有效3D点(经过padding/mask后): frame={name}")
+                if self.translation_sensitivity:
+                    send_crop_failure("crop_has_no_valid_points_after_resize", euler, trans)
+                    break
                 continue
             if points_valid.shape[0] < self.sample_num:
                 msg = f"裁剪结果有效3D点过少: frame={name}, count={points_valid.shape[0]}"
@@ -473,9 +691,10 @@ class DualProcessTask:
             idx += 1
 
         self.stop_evt.set()
-        with open(self.sample_num_report, "w") as f:
-            f.write(f"total_frames {len(sample_num_report_lines)}\n")
-            f.write("\n".join(sample_num_report_lines))
+        if not self.translation_sensitivity:
+            with open(self.sample_num_report, "w") as f:
+                f.write(f"total_frames {len(sample_num_report_lines)}\n")
+                f.write("\n".join(sample_num_report_lines))
         while True:
             try:
                 self.task_q.put(None, timeout=1)
@@ -488,6 +707,9 @@ class DualProcessTask:
     # ---------------- 定位线程 ----------------
     def localization_worker(self):
         from pixloc.localization import RenderLocalizer, SimpleTracker
+        if self.translation_sensitivity:
+            np.random.seed(self.random_seed)
+            torch.manual_seed(self.random_seed)
         localizer = RenderLocalizer(self.conf)
         self._disable_optimizer_debug_prints(localizer)
         results = []   # 存盘缓冲
@@ -502,6 +724,16 @@ class DualProcessTask:
         optimizer_times_ms = []
         postprocess_times_ms = []
         sample_num = self.sample_num
+        failure_record = None
+        translation_file = None
+        translation_writer = None
+        if self.translation_sensitivity:
+            translation_file = open(self.translation_frames_report, "w", newline="")
+            translation_writer = csv.DictWriter(
+                translation_file, fieldnames=TRANSLATION_FRAME_FIELDS
+            )
+            translation_writer.writeheader()
+            translation_file.flush()
         # 读取 GT 深度列表（按行顺序对应帧序号）
         depth_txt_path = self.depth_txt_path 
         angle_txt_path = self.angle_txt_path
@@ -549,9 +781,49 @@ class DualProcessTask:
                     break
                 except queue.Empty:
                     if self.stop_evt.is_set():
+                        if self.translation_sensitivity:
+                            failure_record = {
+                                "failure_frame": idx,
+                                "failure_image": os.path.basename(img_path),
+                                "failure_reason": "render_worker_ended_before_frame",
+                            }
+                            self.localization_failure_evt.set()
+                            break
                         return
                     continue
+            if failure_record is not None:
+                break
             if item is None:        # 渲染端提前喊停
+                if self.translation_sensitivity and idx < len(self.img_list):
+                    failure_record = {
+                        "failure_frame": idx,
+                        "failure_image": os.path.basename(img_path),
+                        "failure_reason": "render_worker_ended_before_frame",
+                    }
+                    self.localization_failure_evt.set()
+                break
+            if isinstance(item, dict) and item.get("failure"):
+                reason = item["reason"]
+                translation_writer.writerow(self._translation_frame_record(
+                    idx,
+                    img_path,
+                    item["render_trans"],
+                    item["render_euler"],
+                    success=False,
+                    failure_reason=reason,
+                ))
+                translation_file.flush()
+                failure_record = {
+                    "failure_frame": idx,
+                    "failure_image": os.path.basename(img_path),
+                    "failure_reason": reason,
+                }
+                self.localization_failure_evt.set()
+                self.stop_evt.set()
+                logging.warning(
+                    "Terminal crop failure: frame=%d image=%s reason=%s",
+                    idx, os.path.basename(img_path), reason,
+                )
                 break
             color, depth, p2d_r, visible_r, render_euler, render_trans, crop_time_ms, sample_num = item
             crop_times_ms.append(float(crop_time_ms))
@@ -671,6 +943,38 @@ class DualProcessTask:
             feature_extract_times_ms.append(feature_extract_ms)
             optimizer_times_ms.append(optimizer_ms)
             postprocess_times_ms.append(postprocess_ms)
+            frame_timings = {
+                "crop_ms": float(crop_time_ms),
+                "localization_ms": float(localization_time_ms),
+                "back_project_ms": float(back_project_time_ms),
+                "feature_ms": feature_extract_ms,
+                "optimizer_ms": optimizer_ms,
+                "postprocess_ms": postprocess_ms,
+            }
+            if self.translation_sensitivity and not ret.get('success', False):
+                reason = "optimizer_returned_success_false"
+                translation_writer.writerow(self._translation_frame_record(
+                    idx,
+                    img_path,
+                    render_trans,
+                    render_euler,
+                    success=False,
+                    failure_reason=reason,
+                    timings=frame_timings,
+                ))
+                translation_file.flush()
+                failure_record = {
+                    "failure_frame": idx,
+                    "failure_image": os.path.basename(img_path),
+                    "failure_reason": reason,
+                }
+                self.localization_failure_evt.set()
+                self.stop_evt.set()
+                logging.warning(
+                    "Terminal localization failure: frame=%d image=%s",
+                    idx, os.path.basename(img_path),
+                )
+                break
             pred_euler = ret['euler_angles']
             pred_trans = ret['translation']
             err_t, err_r, gt_euler, gt_trans = self._compute_frame_error_against_gt(
@@ -679,10 +983,23 @@ class DualProcessTask:
                 pred_euler,
             )
             use_gt_reset = (
-                err_t is not None
+                not self.translation_sensitivity
+                and err_t is not None
                 and err_r is not None
                 and (err_t > 30.0 or err_r > 30.0)
             )
+            if self.translation_sensitivity:
+                translation_writer.writerow(self._translation_frame_record(
+                    idx,
+                    img_path,
+                    render_trans,
+                    render_euler,
+                    pred_trans=pred_trans,
+                    pred_euler=pred_euler,
+                    success=True,
+                    timings=frame_timings,
+                ))
+                translation_file.flush()
             if use_gt_reset:
                 reset_count += 1
                 reset_records.append({
@@ -749,7 +1066,22 @@ class DualProcessTask:
                 break
         with open(self.estimated_pose, "w") as f:
             f.write("\n".join(results))
-        self._write_reset_report(len(results), reset_count, sample_num, reset_records)
+        if translation_file is not None:
+            translation_file.close()
+        if not self.translation_sensitivity:
+            self._write_reset_report(len(results), reset_count, sample_num, reset_records)
+        if self.translation_sensitivity:
+            if failure_record is None and len(results) == len(self.img_list):
+                self._write_run_status("complete", len(results))
+            else:
+                if failure_record is None:
+                    failure_record = {
+                        "failure_frame": len(results),
+                        "failure_image": "",
+                        "failure_reason": "sequence_ended_early",
+                    }
+                self.localization_failure_evt.set()
+                self._write_run_status("failed", len(results), failure_record)
         if crop_times_ms and localization_times_ms:
             logging.info(
                 "Timing summary: crop avg %.2f ms | localization avg %.2f ms | "
@@ -864,6 +1196,12 @@ class DualProcessTask:
     def video_save(self):
         video_generation.create_video_from_images(self.outputs, self.outputs+'/video.mp4') 
     def eval(self):
+        if self.translation_sensitivity and self.localization_failure_evt.is_set():
+            logging.warning(
+                "Skipping aggregate evaluation because the sequence failed: %s",
+                self.run_status_report,
+            )
+            return
         evaluate(self.estimated_pose, self.gt_pose)
     def run(self):
         ctx = mp.get_context("spawn")        # 保持 spawn
@@ -872,10 +1210,22 @@ class DualProcessTask:
 
         p_render.start(); p_loc.start()
         p_loc.join()                         # 先等定位结束
+        if p_loc.exitcode != 0:
+            self.localization_failure_evt.set()
+            self._write_run_status(
+                "worker_process_error",
+                0,
+                {
+                    "failure_frame": None,
+                    "failure_image": "",
+                    "failure_reason": f"localization_exit_{p_loc.exitcode}",
+                },
+            )
         p_render.join(5)                    # 最多等 30 s
         if p_render.is_alive():              # 兜底：仍卡住就强退
             p_render.terminate()
             p_render.join()
+        return not self.localization_failure_evt.is_set()
 def parse_args():
     parser = argparse.ArgumentParser(description="你的程序说明")
 
@@ -921,6 +1271,33 @@ def parse_args():
         help="输出目录"
     )
 
+    parser.add_argument(
+        "--translation_sensitivity",
+        action="store_true",
+        help="启用第一帧ECEF X/Y平移先验敏感性实验"
+    )
+
+    parser.add_argument(
+        "--prior_dx_m",
+        type=float,
+        default=0.0,
+        help="第一帧ECEF X分量扰动（米）"
+    )
+
+    parser.add_argument(
+        "--prior_dy_m",
+        type=float,
+        default=0.0,
+        help="第一帧ECEF Y分量扰动（米）"
+    )
+
+    parser.add_argument(
+        "--random_seed",
+        type=int,
+        default=0,
+        help="实验随机种子"
+    )
+
     args = parser.parse_args()
 
 
@@ -945,7 +1322,14 @@ if __name__ == "__main__":
         name=name,
         sample_num=args.sample_num,
         output_folder=args.output_folder,
+        translation_sensitivity=args.translation_sensitivity,
+        prior_dx_m=args.prior_dx_m,
+        prior_dy_m=args.prior_dy_m,
+        random_seed=args.random_seed,
     )
-    dual_task.run()
-    dual_task.eval()
+    run_complete = dual_task.run()
+    if run_complete:
+        dual_task.eval()
+    else:
+        sys.exit(2)
     

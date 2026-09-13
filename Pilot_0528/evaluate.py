@@ -51,9 +51,9 @@ target_names = [
 ]
 
 for target_name in target_names:
-    if os.path.exists(f"/media/amax/PortableSSD/0908/all/seed500/{target_name}.txt"):
+    if os.path.exists(f"/media/amax/PortableSSD/0908/vision/seed500/{target_name}.txt"):
         print(f"--------------{target_name}------------------")
-        evaluate(f"/media/amax/AE0E2AFD0E2ABE69/datasets/poses/{target_name}.txt", f"/media/amax/PortableSSD/0908/all/seed500/{target_name}.txt")
+        evaluate(f"/media/amax/AE0E2AFD0E2ABE69/datasets/poses/{target_name}.txt", f"/media/amax/PortableSSD/0908/vision/seed500/{target_name}.txt")
     else:
         print(f"--------------{target_name} not found------------------")
 

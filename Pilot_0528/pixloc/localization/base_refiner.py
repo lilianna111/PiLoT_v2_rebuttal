@@ -348,9 +348,19 @@ class BaseRefiner:
             valid = (~fail_list) & t_indices & R_indices
             valid_loss = overall_loss[valid]
 
-            if not any(valid):
-                print('attention')
-                import ipdb; ipdb.set_trace()
+            if not bool(valid.any().item()):
+                logger.info(f"Optimization produced no valid pose candidates for query {qname}")
+                ret['success'] = False
+                postprocess_ms = (_sync_now() - postprocess_t0) * 1e3
+                ret['timings_ms'] = {
+                    'feature_extract_ms': float(feature_extract_ms),
+                    'optimizer_ms': float(optimizer_ms),
+                    'postprocess_ms': float(postprocess_ms),
+                    'refine_total_ms': float((_sync_now() - refine_t0) * 1e3),
+                    'optimizer_level_times_ms': ret.get('optimizer_level_times_ms', []),
+                    'optimizer_level_detail_ms': ret.get('optimizer_level_detail_ms', []),
+                }
+                return ret
             min_index_in_valid = torch.argmin(valid_loss)
 
             # ------

@@ -73,13 +73,18 @@ def translation_error_ecef(reference_translation, estimated_translation):
     return estimated_ecef - reference_ecef
 
 
-TRANSLATION_FRAME_FIELDS = [
-    "frame", "image", "injected_dx_m", "injected_dy_m",
+def wrap_angle_deg(angle_deg):
+    return (float(angle_deg) + 180.0) % 360.0 - 180.0
+
+
+SENSITIVITY_FRAME_FIELDS = [
+    "frame", "image", "injected_dx_m", "injected_dy_m", "injected_yaw_deg",
     "gt_ecef_x", "gt_ecef_y", "gt_ecef_z",
     "crop_prior_ecef_x", "crop_prior_ecef_y", "crop_prior_ecef_z",
     "pred_ecef_x", "pred_ecef_y", "pred_ecef_z",
     "prior_error_x_m", "prior_error_y_m", "prior_error_z_m",
     "prior_error_xy_m", "prior_error_3d_m",
+    "gt_yaw_deg", "crop_prior_yaw_deg", "prior_yaw_error_deg", "pred_yaw_deg",
     "final_error_x_m", "final_error_y_m", "final_error_z_m",
     "final_error_xy_m", "final_error_3d_m",
     "final_yaw_error_deg", "final_rotation_error_deg",
@@ -176,7 +181,8 @@ def process_map_crop(ref_DSM_path, pose_data, ref_npy_path, name, map_data_pack,
 class DualProcessTask:        
     def __init__(self, config, init_euler = None, init_trans = None, name = None, sample_num=300,
                  output_folder=None, translation_sensitivity=False,
-                 prior_dx_m=0.0, prior_dy_m=0.0, random_seed=0):
+                 prior_dx_m=0.0, prior_dy_m=0.0, yaw_sensitivity=False,
+                 prior_yaw_deg=0.0, random_seed=0):
         # 用 multiprocessing 队列/事件
         self.task_q   = Queue(maxsize=2)     # 渲染 → 定位
         self.pose_q   = Queue(maxsize=3)     # 定位 → 渲染
@@ -187,13 +193,20 @@ class DualProcessTask:
         self.conf = default_confs['from_render_test'] # from_render_test
         self.sample_num = sample_num
         self.translation_sensitivity = bool(translation_sensitivity)
+        self.yaw_sensitivity = bool(yaw_sensitivity)
+        if self.translation_sensitivity and self.yaw_sensitivity:
+            raise ValueError("translation and yaw sensitivity modes are mutually exclusive")
+        self.sensitivity_experiment = self.translation_sensitivity or self.yaw_sensitivity
         self.prior_dx_m = float(prior_dx_m)
         self.prior_dy_m = float(prior_dy_m)
+        self.prior_yaw_deg = float(prior_yaw_deg)
         self.random_seed = int(random_seed)
-        if not np.isfinite([self.prior_dx_m, self.prior_dy_m]).all():
-            raise ValueError("prior_dx_m and prior_dy_m must be finite")
+        if not np.isfinite([self.prior_dx_m, self.prior_dy_m, self.prior_yaw_deg]).all():
+            raise ValueError("prior perturbations must be finite")
         if not self.translation_sensitivity and (self.prior_dx_m != 0 or self.prior_dy_m != 0):
             raise ValueError("non-zero ECEF translation requires --translation_sensitivity")
+        if not self.yaw_sensitivity and self.prior_yaw_deg != 0:
+            raise ValueError("non-zero yaw perturbation requires --yaw_sensitivity")
         # conf初始化
         folder_path = default_confs['dataset_path']
         dataset_name = default_confs['dataset_name']
@@ -234,7 +247,7 @@ class DualProcessTask:
             os.path.join(output_folder, output_name + "_status.json"),
         ]
         existing_outputs = [path for path in experiment_outputs if os.path.exists(path)]
-        if self.translation_sensitivity and existing_outputs:
+        if self.sensitivity_experiment and existing_outputs:
             raise FileExistsError(f"Experiment output already exists: {existing_outputs[0]}")
         if not os.path.exists(self.outputs):
             os.makedirs(self.outputs)
@@ -256,8 +269,8 @@ class DualProcessTask:
         self.last_frame_info['refine_conf'] = self.refine_conf
         self.gt_reset_report = os.path.join(output_folder, dataset_name + "_reset.txt")
         self.sample_num_report = os.path.join(output_folder, dataset_name + f"_{self.sample_num}.txt")
-        self.translation_frames_report = os.path.join(output_folder, dataset_name + "_frames.csv")
-        self.translation_config_report = os.path.join(output_folder, dataset_name + "_config.json")
+        self.sensitivity_frames_report = os.path.join(output_folder, dataset_name + "_frames.csv")
+        self.sensitivity_config_report = os.path.join(output_folder, dataset_name + "_config.json")
         self.run_status_report = os.path.join(output_folder, dataset_name + "_status.json")
         
         # 初始化先验位姿和内参
@@ -286,12 +299,13 @@ class DualProcessTask:
 
         self.render_camera = generate_render_camera(self.render_camera_osg).float()
         self.render_config['render_camera'] = self.render_camera_osg 
-        self.save_crop_frames = not self.translation_sensitivity
+        self.save_crop_frames = not self.sensitivity_experiment
 
         # 是否padding, num init  pose
         self.num_init_pose = default_confs['num_init_pose']
         self.padding = default_confs['padding']
         self.euler_angles, self.translation, self.origin = get_init(self.gt_pose)
+        gt_init_euler = list(self.euler_angles)
         gt_init_translation = list(self.translation)
         if self.translation_sensitivity:
             self.translation, prior_ecef, delta_ecef = add_translation_prior_ecef_xy(
@@ -301,14 +315,18 @@ class DualProcessTask:
         else:
             prior_ecef = np.asarray(self.origin, dtype=np.float64)
             delta_ecef = np.zeros(3, dtype=np.float64)
+        if self.yaw_sensitivity:
+            self.euler_angles = list(self.euler_angles)
+            self.euler_angles[2] = wrap_angle_deg(self.euler_angles[2] + self.prior_yaw_deg)
         self.render_config['init_rot'], self.render_config['init_trans'] = self.euler_angles, self.translation
         default_confs['refine']['origin'] = self.origin
         self.gt_pose_dict = load_poses(self.gt_pose, origin = self.origin)
 
-        if self.translation_sensitivity:
+        if self.sensitivity_experiment:
             actual_delta_ecef = translation_error_ecef(gt_init_translation, self.translation)
+            actual_yaw_error = wrap_angle_deg(self.euler_angles[2] - gt_init_euler[2])
             config_record = {
-                "experiment": "translation_only_ecef_xy",
+                "experiment": "translation_only_ecef_xy" if self.translation_sensitivity else "yaw_only",
                 "sequence": dataset_name,
                 "expected_frames": len(self.img_list),
                 "sample_num": self.sample_num,
@@ -317,9 +335,13 @@ class DualProcessTask:
                 "prior_dy_m": self.prior_dy_m,
                 "prior_dz_m": 0.0,
                 "prior_xy_magnitude_m": float(np.hypot(self.prior_dx_m, self.prior_dy_m)),
-                "yaw_noise_deg": 0.0,
+                "prior_yaw_deg": self.prior_yaw_deg,
+                "yaw_noise_deg": self.prior_yaw_deg,
                 "gt_reset_enabled": False,
                 "save_crop_frames": self.save_crop_frames,
+                "initial_gt_euler_pitch_roll_yaw_deg": gt_init_euler,
+                "initial_prior_euler_pitch_roll_yaw_deg": self.euler_angles,
+                "actual_prior_yaw_error_deg": actual_yaw_error,
                 "initial_gt_wgs84": gt_init_translation,
                 "initial_gt_ecef": WGS84_to_ECEF(gt_init_translation),
                 "delta_ecef_m": delta_ecef.tolist(),
@@ -327,22 +349,29 @@ class DualProcessTask:
                 "initial_prior_ecef": prior_ecef.tolist(),
                 "actual_prior_error_ecef_m": actual_delta_ecef.tolist(),
             }
-            with open(self.translation_config_report, "w") as f:
+            with open(self.sensitivity_config_report, "w") as f:
                 json.dump(config_record, f, indent=2)
             self._write_run_status("running", 0)
-            logging.warning(
-                "Translation-only ECEF prior: dX=%.3f m dY=%.3f m actual=%s",
-                self.prior_dx_m,
-                self.prior_dy_m,
-                np.round(actual_delta_ecef, 6).tolist(),
-            )
+            if self.translation_sensitivity:
+                logging.warning(
+                    "Translation-only ECEF prior: dX=%.3f m dY=%.3f m actual=%s",
+                    self.prior_dx_m,
+                    self.prior_dy_m,
+                    np.round(actual_delta_ecef, 6).tolist(),
+                )
+            else:
+                logging.warning(
+                    "Yaw-only prior: requested=%+.3f deg actual=%+.3f deg",
+                    self.prior_yaw_deg,
+                    actual_yaw_error,
+                )
         
         self.device = 'cuda'
         self.origin = torch.tensor(self.origin, device=self.device)
         self.query_camera, self.render_camera = self.query_camera.to(self.device), self.render_camera.to(self.device)
 
         self.pose_q.put_nowait((self.euler_angles, self.translation))
-        if not self.translation_sensitivity:
+        if not self.sensitivity_experiment:
             self.pose_q.put_nowait((self.euler_angles, self.translation))
 
     @staticmethod
@@ -383,25 +412,29 @@ class DualProcessTask:
         gt_ecef = np.asarray(WGS84_to_ECEF(gt_translation), dtype=np.float64)
         estimated_ecef = np.asarray(WGS84_to_ECEF(translation), dtype=np.float64)
         error_ecef = estimated_ecef - gt_ecef
-        yaw_error = abs((float(euler_angles[2]) - float(gt_euler[2]) + 180.0) % 360.0 - 180.0)
+        signed_yaw_error = wrap_angle_deg(float(euler_angles[2]) - float(gt_euler[2]))
         return {
             "gt_ecef": gt_ecef.tolist(),
             "estimated_ecef": estimated_ecef.tolist(),
             "error_ecef": error_ecef.tolist(),
             "error_xy_m": float(np.linalg.norm(error_ecef[:2])),
             "error_3d_m": float(np.linalg.norm(error_ecef)),
-            "yaw_error_deg": float(yaw_error),
+            "gt_yaw_deg": float(gt_euler[2]),
+            "estimated_yaw_deg": float(euler_angles[2]),
+            "signed_yaw_error_deg": signed_yaw_error,
+            "yaw_error_deg": abs(signed_yaw_error),
         }
 
-    def _translation_frame_record(self, frame, img_path, crop_trans, crop_euler,
+    def _sensitivity_frame_record(self, frame, img_path, crop_trans, crop_euler,
                                   pred_trans=None, pred_euler=None,
                                   success=True, failure_reason="", timings=None):
-        row = {field: "" for field in TRANSLATION_FRAME_FIELDS}
+        row = {field: "" for field in SENSITIVITY_FRAME_FIELDS}
         row.update({
             "frame": frame,
             "image": os.path.basename(img_path),
             "injected_dx_m": self.prior_dx_m,
             "injected_dy_m": self.prior_dy_m,
+            "injected_yaw_deg": self.prior_yaw_deg,
             "optimization_success": int(success),
             "failure_reason": failure_reason,
         })
@@ -422,6 +455,9 @@ class DualProcessTask:
                 "prior_error_z_m": error_ecef[2],
                 "prior_error_xy_m": prior["error_xy_m"],
                 "prior_error_3d_m": prior["error_3d_m"],
+                "gt_yaw_deg": prior["gt_yaw_deg"],
+                "crop_prior_yaw_deg": prior["estimated_yaw_deg"],
+                "prior_yaw_error_deg": prior["signed_yaw_error_deg"],
             })
         if pred_trans is not None and pred_euler is not None:
             final = self._pose_error_record(img_path, pred_trans, pred_euler)
@@ -435,6 +471,7 @@ class DualProcessTask:
                     "pred_ecef_x": pred_ecef[0],
                     "pred_ecef_y": pred_ecef[1],
                     "pred_ecef_z": pred_ecef[2],
+                    "pred_yaw_deg": final["estimated_yaw_deg"],
                     "final_error_x_m": error_ecef[0],
                     "final_error_y_m": error_ecef[1],
                     "final_error_z_m": error_ecef[2],
@@ -448,7 +485,7 @@ class DualProcessTask:
         return row
 
     def _write_run_status(self, status, successful_frames, failure_record=None):
-        if not self.translation_sensitivity:
+        if not self.sensitivity_experiment:
             return
         record = {
             "status": status,
@@ -503,7 +540,7 @@ class DualProcessTask:
     def rendering_worker(self):
         import torch
         from pixloc.crop.ray_casting import TargetLocation
-        if self.translation_sensitivity:
+        if self.sensitivity_experiment:
             np.random.seed(self.random_seed)
         # === 1. 配置路径 ===
         # ref_DOM_path = "/media/amax/AE0E2AFD0E2ABE69/datasets/DSM/feicuiwan/feicuiwan/fcw_hangtian_DOM.tif"
@@ -587,7 +624,7 @@ class DualProcessTask:
                 )
             except Exception as exc:
                 logging.error(f"process_map_crop 失败 name={name}: {exc}")
-                if self.translation_sensitivity:
+                if self.sensitivity_experiment:
                     send_crop_failure(f"crop_exception: {exc}", euler, trans)
                     break
                 continue
@@ -596,7 +633,7 @@ class DualProcessTask:
             valid_mask = np.isfinite(points3d).all(axis=-1) & (points3d[..., 2] > 0)    #valid_mask: 有效掩码，用于标识哪些点是有效的
             if not np.any(valid_mask):
                 logging.error(f"裁剪结果无有效3D点: frame={name}")
-                if self.translation_sensitivity:
+                if self.sensitivity_experiment:
                     send_crop_failure("crop_has_no_valid_3d_points", euler, trans)
                     break
                 continue
@@ -631,7 +668,7 @@ class DualProcessTask:
             points_valid = points3d[mask]
             if points_valid.shape[0] == 0:
                 logging.error(f"裁剪结果无有效3D点(经过padding/mask后): frame={name}")
-                if self.translation_sensitivity:
+                if self.sensitivity_experiment:
                     send_crop_failure("crop_has_no_valid_points_after_resize", euler, trans)
                     break
                 continue
@@ -691,7 +728,7 @@ class DualProcessTask:
             idx += 1
 
         self.stop_evt.set()
-        if not self.translation_sensitivity:
+        if not self.sensitivity_experiment:
             with open(self.sample_num_report, "w") as f:
                 f.write(f"total_frames {len(sample_num_report_lines)}\n")
                 f.write("\n".join(sample_num_report_lines))
@@ -707,7 +744,7 @@ class DualProcessTask:
     # ---------------- 定位线程 ----------------
     def localization_worker(self):
         from pixloc.localization import RenderLocalizer, SimpleTracker
-        if self.translation_sensitivity:
+        if self.sensitivity_experiment:
             np.random.seed(self.random_seed)
             torch.manual_seed(self.random_seed)
         localizer = RenderLocalizer(self.conf)
@@ -725,15 +762,15 @@ class DualProcessTask:
         postprocess_times_ms = []
         sample_num = self.sample_num
         failure_record = None
-        translation_file = None
-        translation_writer = None
-        if self.translation_sensitivity:
-            translation_file = open(self.translation_frames_report, "w", newline="")
-            translation_writer = csv.DictWriter(
-                translation_file, fieldnames=TRANSLATION_FRAME_FIELDS
+        sensitivity_file = None
+        sensitivity_writer = None
+        if self.sensitivity_experiment:
+            sensitivity_file = open(self.sensitivity_frames_report, "w", newline="")
+            sensitivity_writer = csv.DictWriter(
+                sensitivity_file, fieldnames=SENSITIVITY_FRAME_FIELDS
             )
-            translation_writer.writeheader()
-            translation_file.flush()
+            sensitivity_writer.writeheader()
+            sensitivity_file.flush()
         # 读取 GT 深度列表（按行顺序对应帧序号）
         depth_txt_path = self.depth_txt_path 
         angle_txt_path = self.angle_txt_path
@@ -781,7 +818,7 @@ class DualProcessTask:
                     break
                 except queue.Empty:
                     if self.stop_evt.is_set():
-                        if self.translation_sensitivity:
+                        if self.sensitivity_experiment:
                             failure_record = {
                                 "failure_frame": idx,
                                 "failure_image": os.path.basename(img_path),
@@ -794,7 +831,7 @@ class DualProcessTask:
             if failure_record is not None:
                 break
             if item is None:        # 渲染端提前喊停
-                if self.translation_sensitivity and idx < len(self.img_list):
+                if self.sensitivity_experiment and idx < len(self.img_list):
                     failure_record = {
                         "failure_frame": idx,
                         "failure_image": os.path.basename(img_path),
@@ -804,7 +841,7 @@ class DualProcessTask:
                 break
             if isinstance(item, dict) and item.get("failure"):
                 reason = item["reason"]
-                translation_writer.writerow(self._translation_frame_record(
+                sensitivity_writer.writerow(self._sensitivity_frame_record(
                     idx,
                     img_path,
                     item["render_trans"],
@@ -812,7 +849,7 @@ class DualProcessTask:
                     success=False,
                     failure_reason=reason,
                 ))
-                translation_file.flush()
+                sensitivity_file.flush()
                 failure_record = {
                     "failure_frame": idx,
                     "failure_image": os.path.basename(img_path),
@@ -951,9 +988,9 @@ class DualProcessTask:
                 "optimizer_ms": optimizer_ms,
                 "postprocess_ms": postprocess_ms,
             }
-            if self.translation_sensitivity and not ret.get('success', False):
+            if self.sensitivity_experiment and not ret.get('success', False):
                 reason = "optimizer_returned_success_false"
-                translation_writer.writerow(self._translation_frame_record(
+                sensitivity_writer.writerow(self._sensitivity_frame_record(
                     idx,
                     img_path,
                     render_trans,
@@ -962,7 +999,7 @@ class DualProcessTask:
                     failure_reason=reason,
                     timings=frame_timings,
                 ))
-                translation_file.flush()
+                sensitivity_file.flush()
                 failure_record = {
                     "failure_frame": idx,
                     "failure_image": os.path.basename(img_path),
@@ -983,13 +1020,13 @@ class DualProcessTask:
                 pred_euler,
             )
             use_gt_reset = (
-                not self.translation_sensitivity
+                not self.sensitivity_experiment
                 and err_t is not None
                 and err_r is not None
                 and (err_t > 30.0 or err_r > 30.0)
             )
-            if self.translation_sensitivity:
-                translation_writer.writerow(self._translation_frame_record(
+            if self.sensitivity_experiment:
+                sensitivity_writer.writerow(self._sensitivity_frame_record(
                     idx,
                     img_path,
                     render_trans,
@@ -999,7 +1036,7 @@ class DualProcessTask:
                     success=True,
                     timings=frame_timings,
                 ))
-                translation_file.flush()
+                sensitivity_file.flush()
             if use_gt_reset:
                 reset_count += 1
                 reset_records.append({
@@ -1066,11 +1103,11 @@ class DualProcessTask:
                 break
         with open(self.estimated_pose, "w") as f:
             f.write("\n".join(results))
-        if translation_file is not None:
-            translation_file.close()
-        if not self.translation_sensitivity:
+        if sensitivity_file is not None:
+            sensitivity_file.close()
+        if not self.sensitivity_experiment:
             self._write_reset_report(len(results), reset_count, sample_num, reset_records)
-        if self.translation_sensitivity:
+        if self.sensitivity_experiment:
             if failure_record is None and len(results) == len(self.img_list):
                 self._write_run_status("complete", len(results))
             else:
@@ -1196,7 +1233,7 @@ class DualProcessTask:
     def video_save(self):
         video_generation.create_video_from_images(self.outputs, self.outputs+'/video.mp4') 
     def eval(self):
-        if self.translation_sensitivity and self.localization_failure_evt.is_set():
+        if self.sensitivity_experiment and self.localization_failure_evt.is_set():
             logging.warning(
                 "Skipping aggregate evaluation because the sequence failed: %s",
                 self.run_status_report,
@@ -1292,6 +1329,19 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--yaw_sensitivity",
+        action="store_true",
+        help="启用第一帧yaw先验敏感性实验"
+    )
+
+    parser.add_argument(
+        "--prior_yaw_deg",
+        type=float,
+        default=0.0,
+        help="第一帧yaw扰动（度，可正可负）"
+    )
+
+    parser.add_argument(
         "--random_seed",
         type=int,
         default=0,
@@ -1325,6 +1375,8 @@ if __name__ == "__main__":
         translation_sensitivity=args.translation_sensitivity,
         prior_dx_m=args.prior_dx_m,
         prior_dy_m=args.prior_dy_m,
+        yaw_sensitivity=args.yaw_sensitivity,
+        prior_yaw_deg=args.prior_yaw_deg,
         random_seed=args.random_seed,
     )
     run_complete = dual_task.run()

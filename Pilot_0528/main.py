@@ -182,7 +182,7 @@ class DualProcessTask:
     def __init__(self, config, init_euler = None, init_trans = None, name = None, sample_num=300,
                  output_folder=None, translation_sensitivity=False,
                  prior_dx_m=0.0, prior_dy_m=0.0, yaw_sensitivity=False,
-                 prior_yaw_deg=0.0, random_seed=0):
+                 joint_sensitivity=False, prior_yaw_deg=0.0, random_seed=0):
         # 用 multiprocessing 队列/事件
         self.task_q   = Queue(maxsize=2)     # 渲染 → 定位
         self.pose_q   = Queue(maxsize=3)     # 定位 → 渲染
@@ -194,19 +194,30 @@ class DualProcessTask:
         self.sample_num = sample_num
         self.translation_sensitivity = bool(translation_sensitivity)
         self.yaw_sensitivity = bool(yaw_sensitivity)
-        if self.translation_sensitivity and self.yaw_sensitivity:
-            raise ValueError("translation and yaw sensitivity modes are mutually exclusive")
-        self.sensitivity_experiment = self.translation_sensitivity or self.yaw_sensitivity
+        self.joint_sensitivity = bool(joint_sensitivity)
+        enabled_modes = sum((
+            self.translation_sensitivity,
+            self.yaw_sensitivity,
+            self.joint_sensitivity,
+        ))
+        if enabled_modes > 1:
+            raise ValueError("translation, yaw, and joint sensitivity modes are mutually exclusive")
+        self.sensitivity_experiment = enabled_modes == 1
         self.prior_dx_m = float(prior_dx_m)
         self.prior_dy_m = float(prior_dy_m)
         self.prior_yaw_deg = float(prior_yaw_deg)
         self.random_seed = int(random_seed)
         if not np.isfinite([self.prior_dx_m, self.prior_dy_m, self.prior_yaw_deg]).all():
             raise ValueError("prior perturbations must be finite")
-        if not self.translation_sensitivity and (self.prior_dx_m != 0 or self.prior_dy_m != 0):
-            raise ValueError("non-zero ECEF translation requires --translation_sensitivity")
-        if not self.yaw_sensitivity and self.prior_yaw_deg != 0:
-            raise ValueError("non-zero yaw perturbation requires --yaw_sensitivity")
+        if not (self.translation_sensitivity or self.joint_sensitivity) and (
+                self.prior_dx_m != 0 or self.prior_dy_m != 0):
+            raise ValueError(
+                "non-zero ECEF translation requires --translation_sensitivity or --joint_sensitivity"
+            )
+        if not (self.yaw_sensitivity or self.joint_sensitivity) and self.prior_yaw_deg != 0:
+            raise ValueError(
+                "non-zero yaw perturbation requires --yaw_sensitivity or --joint_sensitivity"
+            )
         # conf初始化
         folder_path = default_confs['dataset_path']
         dataset_name = default_confs['dataset_name']
@@ -307,7 +318,7 @@ class DualProcessTask:
         self.euler_angles, self.translation, self.origin = get_init(self.gt_pose)
         gt_init_euler = list(self.euler_angles)
         gt_init_translation = list(self.translation)
-        if self.translation_sensitivity:
+        if self.translation_sensitivity or self.joint_sensitivity:
             self.translation, prior_ecef, delta_ecef = add_translation_prior_ecef_xy(
                 self.translation, self.prior_dx_m, self.prior_dy_m
             )
@@ -315,7 +326,7 @@ class DualProcessTask:
         else:
             prior_ecef = np.asarray(self.origin, dtype=np.float64)
             delta_ecef = np.zeros(3, dtype=np.float64)
-        if self.yaw_sensitivity:
+        if self.yaw_sensitivity or self.joint_sensitivity:
             self.euler_angles = list(self.euler_angles)
             self.euler_angles[2] = wrap_angle_deg(self.euler_angles[2] + self.prior_yaw_deg)
         self.render_config['init_rot'], self.render_config['init_trans'] = self.euler_angles, self.translation
@@ -325,8 +336,14 @@ class DualProcessTask:
         if self.sensitivity_experiment:
             actual_delta_ecef = translation_error_ecef(gt_init_translation, self.translation)
             actual_yaw_error = wrap_angle_deg(self.euler_angles[2] - gt_init_euler[2])
+            if self.joint_sensitivity:
+                experiment_name = "joint_ecef_xy_yaw"
+            elif self.translation_sensitivity:
+                experiment_name = "translation_only_ecef_xy"
+            else:
+                experiment_name = "yaw_only"
             config_record = {
-                "experiment": "translation_only_ecef_xy" if self.translation_sensitivity else "yaw_only",
+                "experiment": experiment_name,
                 "sequence": dataset_name,
                 "expected_frames": len(self.img_list),
                 "sample_num": self.sample_num,
@@ -352,7 +369,17 @@ class DualProcessTask:
             with open(self.sensitivity_config_report, "w") as f:
                 json.dump(config_record, f, indent=2)
             self._write_run_status("running", 0)
-            if self.translation_sensitivity:
+            if self.joint_sensitivity:
+                logging.warning(
+                    "Joint ECEF-XY/yaw prior: dX=%+.3f m dY=%+.3f m "
+                    "yaw requested=%+.3f deg actual translation=%s actual yaw=%+.3f deg",
+                    self.prior_dx_m,
+                    self.prior_dy_m,
+                    self.prior_yaw_deg,
+                    np.round(actual_delta_ecef, 6).tolist(),
+                    actual_yaw_error,
+                )
+            elif self.translation_sensitivity:
                 logging.warning(
                     "Translation-only ECEF prior: dX=%.3f m dY=%.3f m actual=%s",
                     self.prior_dx_m,
@@ -1335,6 +1362,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--joint_sensitivity",
+        action="store_true",
+        help="启用第一帧ECEF X/Y平移和yaw联合先验敏感性实验"
+    )
+
+    parser.add_argument(
         "--prior_yaw_deg",
         type=float,
         default=0.0,
@@ -1376,6 +1409,7 @@ if __name__ == "__main__":
         prior_dx_m=args.prior_dx_m,
         prior_dy_m=args.prior_dy_m,
         yaw_sensitivity=args.yaw_sensitivity,
+        joint_sensitivity=args.joint_sensitivity,
         prior_yaw_deg=args.prior_yaw_deg,
         random_seed=args.random_seed,
     )

@@ -510,13 +510,13 @@ def generate_rotvecs_cuda_sym3d(
     # yaw_vals   = _symmetric_range(max_yaw,   yaw_step)
     # roll_vals  = _symmetric_range(max_roll,  roll_step)
     # pitch_vals = torch.tensor([15, 13, 11, 9, 7, 5, 3, 1, -1, -3, -5, -7, -9, -11, -13, -15]).to(device)
-    # yaw_vals = torch.tensor([15, 13, 11, 9, 7, 5, 3, 1, -1, -3, -5, -7, -9, -11, -13, -15]).to(device)
+    yaw_vals = torch.tensor([15, 13, 11, 9, 7, 5, 3, 1, -1, -3, -5, -7, -9, -11, -13, -15]).to(device)
     # roll_vals = torch.tensor([-1, 0, 1]).to(device)
     # pitch_vals = torch.tensor([5,4,3,2, 1, 0, -1, -2, -3, -4, -5]).to(device)
     # yaw_vals = torch.tensor([5,4,3,2, 1, 0, -1, -2, -3, -4, -5]).to(device)
     
     # pitch_vals = torch.tensor([11, 9, 7, 5, 3, 1, -1, -3, -5, -7, -9, -11]).to(device)
-    yaw_vals = torch.tensor([11, 9, 7, 5, 3, 1, -1, -3, -5, -7, -9, -11]).to(device)
+    # yaw_vals = torch.tensor([11, 9, 7, 5, 3, 1, -1, -3, -5, -7, -9, -11]).to(device)
     # pitch_vals = torch.tensor([7, 5, 3, 1, -1, -3, -5, -7]).to(device)
     # yaw_vals = torch.tensor([7, 5, 3, 1, -1, -3, -5, -7]).to(device)
     pitch_vals = torch.tensor([0]).to(device)
@@ -1250,8 +1250,8 @@ def get_3D_samples_v3(mkpts_r, depth_mat, T_c2w, camera, euler_angles, translati
     # query_translation 是 WGS84 [lon, lat, h]，在 ECEF 下加扰动
     translations_ecef_batch = generate_translations_ecef_sym3d(
         base_translation_wgs84=query_translation,
-        max_dx=10.0, dx_step=2.0,  # ECEF X 方向 (米), 设为0表示不撒种子
-        max_dy=10.0, dy_step=2.0,  # ECEF Y 方向 (米), 设为0表示不撒种子
+        max_dx=15.0, dx_step=2.0,  # ECEF X 方向 (米), 设为0表示不撒种子
+        max_dy=15.0, dy_step=2.0,  # ECEF Y 方向 (米), 设为0表示不撒种子
         max_dz=0.0, dz_step=2.0,  # ECEF Z 方向 (米), 设为0表示不撒种子
         device=device
     )

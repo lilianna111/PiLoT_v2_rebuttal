@@ -147,8 +147,10 @@ class LearnedOptimizer(BaseOptimizer):
     def _run(self, p3D: Tensor, F_ref: Tensor, F_query: Tensor,
              T_init, camera: Camera, T_render, ref_camera: Camera,mask: Optional[Tensor] = None,
              W_ref_query: Optional[Tuple[Tensor, Tensor]] = None, p2d_r=None,visible_r=None, T_gt = None, batch = True,
-             gt_depth=None, gt_roll=None, gt_pitch=None, dd=None, mul=None, origin=None, dsm_path=None, render_T_ecef=None):
+             gt_depth=None, gt_roll=None, gt_pitch=None, dd=None, mul=None, origin=None, dsm_path=None, render_T_ecef=None,
+             record_initial_diagnostics=False):
         self.last_run_timing = {}
+        self.last_run_diagnostics = {}
 
         # ==================== 核心修复区域 START ====================
         # 无论传进来是 (N,2) 还是 (1,N,2) 还是 (1,1,N,2)
@@ -205,6 +207,40 @@ class LearnedOptimizer(BaseOptimizer):
         # T = T.double()
         failed = torch.full(T.shape, False, dtype=torch.bool, device=T.device)
         #创建一个和 T 形状一样的布尔型张量 failed，并全部初始化为 False，放在 T 所在的设备上（比如 GPU）
+
+        if record_initial_diagnostics:
+            with torch.no_grad():
+                _, _, _, valid_initial, _, cost_initial = self.cost_fn.residual_jacobian_batch_quat(
+                    T_flat.unsqueeze(0), *args, cost_only=True
+                )
+                depth_enabled = getattr(self.cost_fn, 'enable_depth_prior', False)
+                angle_enabled = getattr(self.cost_fn, 'enable_angle_prior', False)
+                try:
+                    self.cost_fn.enable_depth_prior = False
+                    self.cost_fn.enable_angle_prior = False
+                    _, _, _, _, _, cost_initial_feature = self.cost_fn.residual_jacobian_batch_quat(
+                        T_flat.unsqueeze(0), *args, cost_only=True
+                    )
+                finally:
+                    self.cost_fn.enable_depth_prior = depth_enabled
+                    self.cost_fn.enable_angle_prior = angle_enabled
+                cost_initial = (
+                    cost_initial.squeeze(0)
+                    if cost_initial.shape[0] == 1 else cost_initial
+                )
+                cost_initial_feature = (
+                    cost_initial_feature.squeeze(0)
+                    if cost_initial_feature.shape[0] == 1 else cost_initial_feature
+                )
+                valid_initial = (
+                    valid_initial.squeeze(0)
+                    if valid_initial.shape[0] == 1 else valid_initial
+                )
+                self.last_run_diagnostics = {
+                    'initial_cost_sum': cost_initial.sum(dim=-1).detach().cpu(),
+                    'initial_feature_cost_sum': cost_initial_feature.sum(dim=-1).detach().cpu(),
+                    'initial_valid_ratio': valid_initial.float().mean(dim=-1).detach().cpu(),
+                }
 
         # === 阶段三：粗层候选预筛 ===
         # 候选数远超后续保留数时，先用 cost_only 对全部候选廉价打分（无雅可比/FD/系统构建），
@@ -325,10 +361,11 @@ class LearnedOptimizer(BaseOptimizer):
             if i == num_iters - 1:
                 with torch.no_grad():
                     post_cost_t0 = _sync_now()
-                    _, _, _, _, _, cost_post = self.cost_fn.residual_jacobian_batch_quat(
+                    _, _, _, valid_post, _, cost_post = self.cost_fn.residual_jacobian_batch_quat(
                         T_flat.unsqueeze(0), *args, cost_only=True
                     )
                     cost_post = cost_post.squeeze(0) if cost_post.shape[0] == 1 else cost_post
+                    valid_post = valid_post.squeeze(0) if valid_post.shape[0] == 1 else valid_post
                     post_cost_ms.append(float((_sync_now() - post_cost_t0) * 1e3))
                     post_cost_breakdown.append(dict(getattr(self.cost_fn, 'last_eval_timing', {})))
                 overall_losses.append(cost_post)
@@ -353,6 +390,12 @@ class LearnedOptimizer(BaseOptimizer):
             torch.full_like(total_cost_loss, 1e12),
             total_cost_loss,
         )
+        if record_initial_diagnostics:
+            self.last_run_diagnostics.update({
+                'final_cost_sum': final_cost.sum(dim=-1).detach().cpu(),
+                'final_valid_ratio': valid_post.float().mean(dim=-1).detach().cpu(),
+                'failed': failed.detach().cpu(),
+            })
         # best_idx = torch.argmin(total_loss)  # 最佳收敛位姿索引
         # print('argmax weight loss: ', torch.argmax(total_loss))
         # print('argmin cost: ', torch.argmin(total_cost_loss))

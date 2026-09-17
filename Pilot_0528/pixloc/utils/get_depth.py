@@ -1236,32 +1236,46 @@ def get_3D_samples_v3(mkpts_r, depth_mat, T_c2w, camera, euler_angles, translati
     3. 对 3D 点和位姿做去中心化处理 (-origin, -dd)
     '''
     # --- 1. 生成初始位姿候选 (Query Pose Candidates) ---
-    # 1.1 角度撒种子
-    query_euler_angles_batch = generate_rotvecs_cuda_sym3d(
-        base_pitch=query_euler_angles[0], 
-        base_roll=query_euler_angles[1], 
-        base_yaw=query_euler_angles[2], 
-        max_pitch=15.0, pitch_step=2.0, 
-        max_yaw=15.0, yaw_step=2.0, 
-        max_roll=1.0, roll_step=1.0
-    )
-    
-    # 1.2 位置撒种子 (在 ECEF 坐标系下)
-    # query_translation 是 WGS84 [lon, lat, h]，在 ECEF 下加扰动
-    translations_ecef_batch = generate_translations_ecef_sym3d(
-        base_translation_wgs84=query_translation,
-        max_dx=10.0, dx_step=2.0,  # ECEF X 方向 (米), 设为0表示不撒种子
-        max_dy=10.0, dy_step=2.0,  # ECEF Y 方向 (米), 设为0表示不撒种子
-        max_dz=0.0, dz_step=2.0,  # ECEF Z 方向 (米), 设为0表示不撒种子
-        device=device
-    )
-    # 1.3 生成变换矩阵 (角度 × 位置 的笛卡尔积)
-    query_T_c2w = euler_angles_to_matrix_ECEF_batch_with_translations(
-        euler_angles=query_euler_angles_batch,
-        translations_ecef=translations_ecef_batch,
-        base_translation_wgs84=query_translation,  # 用于计算 ENU -> ECEF 旋转
-        device=device
-    )
+    # 收敛域实验可通过 T_query_in_ECEF_c2w 传入精确、成对的 ECEF c2w
+    # 候选；常规定位路径不传该参数，仍使用原有固定撒种子策略。
+    explicit_query_candidates = T_query_in_ECEF_c2w is not None
+    if explicit_query_candidates:
+        query_T_c2w = torch.as_tensor(
+            T_query_in_ECEF_c2w, device=device, dtype=torch.float64
+        ).clone()
+        if query_T_c2w.ndim == 2:
+            query_T_c2w = query_T_c2w.unsqueeze(0)
+        if query_T_c2w.ndim != 3 or query_T_c2w.shape[-2:] != (4, 4):
+            raise ValueError(
+                "T_query_in_ECEF_c2w must have shape [N, 4, 4] or [4, 4]"
+            )
+    else:
+        # 1.1 角度撒种子
+        query_euler_angles_batch = generate_rotvecs_cuda_sym3d(
+            base_pitch=query_euler_angles[0],
+            base_roll=query_euler_angles[1],
+            base_yaw=query_euler_angles[2],
+            max_pitch=15.0, pitch_step=2.0,
+            max_yaw=15.0, yaw_step=2.0,
+            max_roll=1.0, roll_step=1.0
+        )
+
+        # 1.2 位置撒种子 (在 ECEF 坐标系下)
+        # query_translation 是 WGS84 [lon, lat, h]，在 ECEF 下加扰动
+        translations_ecef_batch = generate_translations_ecef_sym3d(
+            base_translation_wgs84=query_translation,
+            max_dx=10.0, dx_step=2.0,  # ECEF X 方向 (米), 设为0表示不撒种子
+            max_dy=10.0, dy_step=2.0,  # ECEF Y 方向 (米), 设为0表示不撒种子
+            max_dz=0.0, dz_step=2.0,  # ECEF Z 方向 (米), 设为0表示不撒种子
+            device=device
+        )
+        # 1.3 生成变换矩阵 (角度 × 位置 的笛卡尔积)
+        query_T_c2w = euler_angles_to_matrix_ECEF_batch_with_translations(
+            euler_angles=query_euler_angles_batch,
+            translations_ecef=translations_ecef_batch,
+            base_translation_wgs84=query_translation,  # 用于计算 ENU -> ECEF 旋转
+            device=device
+        )
 
     # 坐标轴调整 (Y轴取反, Z轴取反) - 根据你的相机坐标系定义
     query_T_c2w[:, :3, 1] = -query_T_c2w[:, :3, 1]
@@ -1325,8 +1339,9 @@ def get_3D_samples_v3(mkpts_r, depth_mat, T_c2w, camera, euler_angles, translati
                 points3d_np[:, 0], points3d_np[:, 1], points3d_np[:, 2]
             )
             points3d_ecef_np = np.column_stack((X, Y, Z))
+            points_dtype = torch.float64 if explicit_query_candidates else torch.float32
             Points_3D_ECEF = torch.as_tensor(
-                points3d_ecef_np, device=device, dtype=torch.float32
+                points3d_ecef_np, device=device, dtype=points_dtype
             )
             
     else:
@@ -1364,7 +1379,9 @@ def get_3D_samples_v3(mkpts_r, depth_mat, T_c2w, camera, euler_angles, translati
     render_T[:3, 3] -= origin  
     # 构造 Render 的 w2c
     render_T_c2w = Pose.from_Rt(render_T[:3, :3], render_T[:3, 3]) 
-    T_render = render_T_c2w.inv().float()
+    T_render = render_T_c2w.inv()
+    if not explicit_query_candidates:
+        T_render = T_render.float()
 
     query_T_c2w[:, :3, 3] -= origin
     T_query = Pose.from_Rt(query_T_c2w[:, :3, :3], query_T_c2w[:, :3, 3]).inv() # w2c
@@ -1389,21 +1406,33 @@ def get_3D_samples_v3(mkpts_r, depth_mat, T_c2w, camera, euler_angles, translati
         Points_3D_ECEF_origin_center = Points_3D_ECEF_origin
         dd = torch.tensor([0., 0., 0.], device=device)
 
+    if explicit_query_candidates:
+        # ECEF 大数值下先用 float64 完成缩放/去中心，再转回模型的
+        # float32，避免 1 m 级扰动在去中心前被量化掉。
+        Points_3D_ECEF_origin_center = Points_3D_ECEF_origin_center.float()
+        T_render = T_render.float()
+        T_query = T_query.float()
+        dd = dd.float()
+
     # --- 7. 生成初始候选位姿 (Initial Poses) ---
     if 'candidate_poses' not in last_frame_info.keys():
-        T_query_c2w_obj = T_query.inv()
-        # 注意：n 应该用 query_T_c2w 的数量（角度×位置的笛卡尔积）
-        num_candidates = query_T_c2w.shape[0]
-        random_aa, random_t = generate_random_aa_and_t_cuda(
-            n = num_candidates,
-            min_offset_angle = min_offset_angle,
-            max_offset_angle = max_offset_angle,
-            min_offset_translation = min_offset_translation,
-            max_offset_translation = max_offset_translation
-        )
-        random_pose = Pose.from_aa(random_aa, random_t)
-        initial_poses = T_query_c2w_obj @ random_pose 
-        initial_poses_w2c = initial_poses.inv()
+        if explicit_query_candidates:
+            # 实验候选已精确指定，不再叠加随机初始偏移。
+            initial_poses_w2c = T_query
+        else:
+            T_query_c2w_obj = T_query.inv()
+            # 注意：n 应该用 query_T_c2w 的数量（角度×位置的笛卡尔积）
+            num_candidates = query_T_c2w.shape[0]
+            random_aa, random_t = generate_random_aa_and_t_cuda(
+                n = num_candidates,
+                min_offset_angle = min_offset_angle,
+                max_offset_angle = max_offset_angle,
+                min_offset_translation = min_offset_translation,
+                max_offset_translation = max_offset_translation
+            )
+            random_pose = Pose.from_aa(random_aa, random_t)
+            initial_poses = T_query_c2w_obj @ random_pose
+            initial_poses_w2c = initial_poses.inv()
     # else:
     #     # 如果有上一帧信息，可能复用 (这里保留你原本的逻辑接口)
         # initial_poses_w2c = last_frame_info['candidate_poses']

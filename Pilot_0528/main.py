@@ -24,6 +24,8 @@ import yaml
 import copy
 import logging
 import torch
+import csv
+import resource
 from multiprocessing import Process, Queue, Event
 from pixloc.crop.transform_colmap import transform_colmap_pose_intrinsic
 from pixloc.crop.proj2map import generate_ref_map
@@ -31,10 +33,33 @@ from pixloc.crop.utils import read_DSM_config
 import torch.nn.functional as F
 import rasterio
 
+WARMUP_FRAMES = 3
+
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s [%(processName)s] %(message)s",
     datefmt="%H:%M:%S")
+
+
+def _peak_rss_mb():
+    """Return this process's peak resident memory in MiB (Linux)."""
+    try:
+        return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
+    except (AttributeError, OSError, ValueError):
+        return 0.0
+
+
+def _gpu_peak_memory_mb():
+    """Return peak allocated/reserved CUDA memory in MiB for this process."""
+    try:
+        if not torch.cuda.is_available():
+            return 0.0, 0.0
+        return (
+            float(torch.cuda.max_memory_allocated()) / (1024.0 ** 2),
+            float(torch.cuda.max_memory_reserved()) / (1024.0 ** 2),
+        )
+    except (RuntimeError, AssertionError):
+        return 0.0, 0.0
 '''
 1. config init rot, init translation, datapath
 '''
@@ -199,6 +224,8 @@ class DualProcessTask:
         self.last_frame_info['refine_conf'] = self.refine_conf
         self.gt_reset_report = os.path.join(output_folder, dataset_name + "_reset.txt")
         self.sample_num_report = os.path.join(output_folder, dataset_name + f"_{self.sample_num}.txt")
+        self.metrics_report = os.path.join(output_folder, dataset_name + "_metrics.csv")
+        self.run_summary_report = os.path.join(output_folder, dataset_name + "_run_summary.txt")
         
         # 初始化先验位姿和内参
         self.name_q = None
@@ -288,6 +315,65 @@ class DualProcessTask:
         with open(self.gt_reset_report, "w") as f:
             f.write("\n".join(lines))
 
+    def _write_metrics_report(self, rows, worker_runtime_s, worker_runtime_after_warmup_s=0.0):
+        fields = [
+            "frame", "image", "requested_anchors", "actual_anchors",
+            "crop_ms", "localization_ms", "back_project_ms",
+            "feature_extract_ms", "optimizer_ms", "postprocess_ms",
+            "rss_peak_mb", "gpu_allocated_peak_mb", "gpu_reserved_peak_mb",
+            "translation_error_m", "rotation_error_deg",
+        ]
+        with open(self.metrics_report, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        timing_rows = rows[WARMUP_FRAMES:]
+        loc_times = [float(row["localization_ms"]) for row in timing_rows]
+        crop_times = [float(row["crop_ms"]) for row in timing_rows]
+        errors_t = [float(row["translation_error_m"]) for row in rows
+                    if row["translation_error_m"] != ""]
+        errors_r = [float(row["rotation_error_deg"]) for row in rows
+                    if row["rotation_error_deg"] != ""]
+        summary_lines = [
+            f"sample_num {self.sample_num}",
+            f"frames {len(rows)}",
+            f"warmup_frames_excluded {min(WARMUP_FRAMES, len(rows))}",
+            f"timing_frames_excluding_warmup {len(timing_rows)}",
+            f"localization_worker_runtime_s {worker_runtime_s:.6f}",
+            f"localization_worker_runtime_after_warmup_s {worker_runtime_after_warmup_s:.6f}",
+            f"localization_avg_ms {np.mean(loc_times):.6f}" if loc_times else "localization_avg_ms 0",
+            f"localization_p95_ms {np.percentile(loc_times, 95):.6f}" if loc_times else "localization_p95_ms 0",
+            f"crop_avg_ms {np.mean(crop_times):.6f}" if crop_times else "crop_avg_ms 0",
+            f"crop_p95_ms {np.percentile(crop_times, 95):.6f}" if crop_times else "crop_p95_ms 0",
+            f"rss_peak_mb {max((_peak_rss_mb(), *(float(row['rss_peak_mb']) for row in rows)), default=0.0):.3f}",
+            f"gpu_allocated_peak_mb {max((float(row['gpu_allocated_peak_mb']) for row in rows), default=0.0):.3f}",
+            f"gpu_reserved_peak_mb {max((float(row['gpu_reserved_peak_mb']) for row in rows), default=0.0):.3f}",
+            f"translation_error_avg_m {np.mean(errors_t):.6f}" if errors_t else "translation_error_avg_m unavailable",
+            f"rotation_error_avg_deg {np.mean(errors_r):.6f}" if errors_r else "rotation_error_avg_deg unavailable",
+        ]
+        with open(self.metrics_report.replace("_metrics.csv", "_metrics_summary.txt"), "w") as f:
+            f.write("\n".join(summary_lines) + "\n")
+        print(
+            "[METRICS] sample_num={} frames={} warmup_excluded={} worker_runtime_s={:.2f} "
+            "avg_loc_ms={} p95_loc_ms={} rss_peak_mb={:.1f} "
+            "gpu_allocated_peak_mb={:.1f} gpu_reserved_peak_mb={:.1f} "
+            "avg_error_m={} avg_error_deg={}".format(
+                self.sample_num,
+                len(rows),
+                min(WARMUP_FRAMES, len(rows)),
+                worker_runtime_s,
+                f"{np.mean(loc_times):.2f}" if loc_times else "NA",
+                f"{np.percentile(loc_times, 95):.2f}" if loc_times else "NA",
+                max((_peak_rss_mb(), *(float(row["rss_peak_mb"]) for row in rows)), default=0.0),
+                max((float(row["gpu_allocated_peak_mb"]) for row in rows), default=0.0),
+                max((float(row["gpu_reserved_peak_mb"]) for row in rows), default=0.0),
+                f"{np.mean(errors_t):.3f}" if errors_t else "NA",
+                f"{np.mean(errors_r):.3f}" if errors_r else "NA",
+            ),
+            flush=True,
+        )
+
     @staticmethod
     def _disable_optimizer_debug_prints(localizer):
         opts = localizer.refiner.optimizer
@@ -312,6 +398,12 @@ class DualProcessTask:
     def rendering_worker(self):
         import torch
         from pixloc.crop.ray_casting import TargetLocation
+        render_t0 = time.perf_counter()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except (RuntimeError, AssertionError):
+            pass
         # === 1. 配置路径 ===
         # ref_DOM_path = "/media/amax/AE0E2AFD0E2ABE69/datasets/DSM/feicuiwan/feicuiwan/fcw_hangtian_DOM.tif"
         # ref_DSM_path = "/media/amax/AE0E2AFD0E2ABE69/datasets/DSM/0.5/0.5/hangtianDSM.tif"
@@ -484,13 +576,40 @@ class DualProcessTask:
                 continue
         self.task_q.close(); self.task_q.join_thread()
         self.pose_q.close(); self.pose_q.join_thread()
+        render_gpu_allocated_mb, render_gpu_reserved_mb = _gpu_peak_memory_mb()
+        render_lines = [
+            f"sample_num {self.sample_num}",
+            f"rendered_frames {idx}",
+            f"render_worker_runtime_s {time.perf_counter() - render_t0:.6f}",
+            f"render_peak_rss_mb {_peak_rss_mb():.3f}",
+            f"render_gpu_allocated_peak_mb {render_gpu_allocated_mb:.3f}",
+            f"render_gpu_reserved_peak_mb {render_gpu_reserved_mb:.3f}",
+        ]
+        with open(self.metrics_report.replace("_metrics.csv", "_render_summary.txt"), "w") as f:
+            f.write("\n".join(render_lines) + "\n")
+        print(
+            f"[RENDER METRICS] sample_num={self.sample_num} frames={idx} "
+            f"runtime_s={time.perf_counter() - render_t0:.2f} "
+            f"rss_peak_mb={_peak_rss_mb():.1f} "
+            f"gpu_allocated_peak_mb={render_gpu_allocated_mb:.1f} "
+            f"gpu_reserved_peak_mb={render_gpu_reserved_mb:.1f}",
+            flush=True,
+        )
         # logging.info('Render/Crop process done')
     # ---------------- 定位线程 ----------------
     def localization_worker(self):
+        worker_t0 = time.perf_counter()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except (RuntimeError, AssertionError):
+            pass
         from pixloc.localization import RenderLocalizer, SimpleTracker
         localizer = RenderLocalizer(self.conf)
         self._disable_optimizer_debug_prints(localizer)
         results = []   # 存盘缓冲
+        metrics_rows = []
+        warmup_end_t = None
         flag = True
         last_euler, last_trans = None, None
         reset_count = 0
@@ -549,12 +668,23 @@ class DualProcessTask:
                     break
                 except queue.Empty:
                     if self.stop_evt.is_set():
+                        steady_runtime = 0.0 if warmup_end_t is None else time.perf_counter() - warmup_end_t
+                        self._write_metrics_report(
+                            metrics_rows,
+                            time.perf_counter() - worker_t0,
+                            steady_runtime,
+                        )
                         return
                     continue
             if item is None:        # 渲染端提前喊停
                 break
             color, depth, p2d_r, visible_r, render_euler, render_trans, crop_time_ms, sample_num = item
             crop_times_ms.append(float(crop_time_ms))
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.reset_peak_memory_stats()
+            except (RuntimeError, AssertionError):
+                pass
             # 2) 反投影
             localization_t0 = time.perf_counter()
             # t1 = time.time()
@@ -740,6 +870,27 @@ class DualProcessTask:
                     np.asarray(pred_trans).tolist(),
                 )
             )
+            rss_peak_mb = _peak_rss_mb()
+            gpu_allocated_peak_mb, gpu_reserved_peak_mb = _gpu_peak_memory_mb()
+            metrics_rows.append({
+                "frame": idx,
+                "image": os.path.basename(img_path),
+                "requested_anchors": int(sample_num),
+                "actual_anchors": int(current_n),
+                "crop_ms": f"{float(crop_time_ms):.6f}",
+                "localization_ms": f"{float(localization_time_ms):.6f}",
+                "back_project_ms": f"{float(back_project_time_ms):.6f}",
+                "feature_extract_ms": f"{feature_extract_ms:.6f}",
+                "optimizer_ms": f"{optimizer_ms:.6f}",
+                "postprocess_ms": f"{postprocess_ms:.6f}",
+                "rss_peak_mb": f"{rss_peak_mb:.6f}",
+                "gpu_allocated_peak_mb": f"{gpu_allocated_peak_mb:.6f}",
+                "gpu_reserved_peak_mb": f"{gpu_reserved_peak_mb:.6f}",
+                "translation_error_m": "" if err_t is None else f"{err_t:.6f}",
+                "rotation_error_deg": "" if err_r is None else f"{err_r:.6f}",
+            })
+            if len(metrics_rows) == WARMUP_FRAMES:
+                warmup_end_t = time.perf_counter()
             # 4) 暂存结果
             qname = os.path.basename(img_path)
             results.append(f"{qname} {' '.join(map(str, pred_trans))} "
@@ -750,6 +901,12 @@ class DualProcessTask:
         with open(self.estimated_pose, "w") as f:
             f.write("\n".join(results))
         self._write_reset_report(len(results), reset_count, sample_num, reset_records)
+        steady_runtime = 0.0 if warmup_end_t is None else time.perf_counter() - warmup_end_t
+        self._write_metrics_report(
+            metrics_rows,
+            time.perf_counter() - worker_t0,
+            steady_runtime,
+        )
         if crop_times_ms and localization_times_ms:
             logging.info(
                 "Timing summary: crop avg %.2f ms | localization avg %.2f ms | "
@@ -866,6 +1023,7 @@ class DualProcessTask:
     def eval(self):
         evaluate(self.estimated_pose, self.gt_pose)
     def run(self):
+        run_t0 = time.perf_counter()
         ctx = mp.get_context("spawn")        # 保持 spawn
         p_render = ctx.Process(target=self.rendering_worker, daemon=True)
         p_loc    = ctx.Process(target=self.localization_worker, daemon=True)
@@ -876,6 +1034,23 @@ class DualProcessTask:
         if p_render.is_alive():              # 兜底：仍卡住就强退
             p_render.terminate()
             p_render.join()
+        run_runtime_s = time.perf_counter() - run_t0
+        run_lines = [
+            f"sample_num {self.sample_num}",
+            f"run_wall_runtime_s {run_runtime_s:.6f}",
+            f"localization_exit_code {p_loc.exitcode}",
+            f"render_exit_code {p_render.exitcode}",
+            f"parent_peak_rss_mb {_peak_rss_mb():.3f}",
+        ]
+        with open(self.run_summary_report, "w") as f:
+            f.write("\n".join(run_lines) + "\n")
+        print(
+            f"[RUN METRICS] sample_num={self.sample_num} "
+            f"wall_runtime_s={run_runtime_s:.2f} "
+            f"parent_peak_rss_mb={_peak_rss_mb():.1f} "
+            f"loc_exit={p_loc.exitcode} render_exit={p_render.exitcode}",
+            flush=True,
+        )
 def parse_args():
     parser = argparse.ArgumentParser(description="你的程序说明")
 
